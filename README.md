@@ -2,6 +2,7 @@
 
 This project explores which pipeline components contribute most to Pawpularity prediction performance.  
 We run controlled experiments across image backbones, metadata models, fusion strategies, and ensembles.
+The main flow of each experiment is inside the notebooks folder
 
 ## Pipeline Stages
 1. Image input & augmentation  
@@ -30,7 +31,7 @@ Pawpularity-Prediction-Experiments/
   - train.csv
   - train/              # training images
 - notebooks/
-  - exp0.ipynb
+  - exp0.ipynb          # main flow of exp0
   - exp1.ipynb
   - exp2.ipynb
   - exp3.ipynb

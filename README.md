@@ -34,6 +34,4 @@ Pawpularity-Prediction-Experiments/
   - exp1.ipynb
   - exp2.ipynb
   - exp3.ipynb
-- outputs/
-  - exp0/               # model/artifacts for experiment 0
 - README.md

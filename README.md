@@ -37,7 +37,8 @@ Pawpularity-Prediction-Experiments/
   - train.csv
   - train/              # training images
 - graphs/
-  - *.pptx # Three figures files
+  - *.pptx # Three figures PPTX files
+  - *.pdf # Three figures PDF files
 - notebooks/
   - exp0.ipynb          # main flow of exp0
   - exp1.ipynb

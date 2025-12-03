@@ -20,16 +20,24 @@ The main flow of each experiment is inside the notebooks folder
 - Exp6–7: Late fusion  
 - Exp8–11: High-res + ensembles
 
-
+## Graphs
+- Figure 1: Pipeline
+![alt text](graphs/Fig_Pipline.png)
+- Figure 2: Early Fusion
+![alt text](graphs/Fig_Early_Fusion.png)
+- Figure 3: Late Fusion
+![alt text](graphs/Fig_Late_Fusion.png)
 
 ## Folder structure
 
-Example project layout:
+Poject layout:
 
 Pawpularity-Prediction-Experiments/
 - data/
   - train.csv
   - train/              # training images
+- graphs/
+  - *.pptx # Three figures files
 - notebooks/
   - exp0.ipynb          # main flow of exp0
   - exp1.ipynb

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from sklearn.metrics import root_mean_squared_error
 
-def train_one_epoch_image(model, loader, optimizer, criterion, device, scale_target):
+def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target):
     model.train()
     total_loss = 0.0
     n_samples = 0
@@ -14,10 +14,12 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device, scale_tar
             y = y / 100.0
 
         optimizer.zero_grad()
-        preds = model(imgs)
-        loss = criterion(preds, y)
-        loss.backward()
-        optimizer.step()
+        with torch.autocast(device_type="cuda"):
+            preds = model(imgs)
+            loss = criterion(preds, y)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item() * imgs.size(0)
         n_samples += imgs.size(0)
@@ -44,7 +46,7 @@ def validate_image(model, loader, device, scale_target):
     return rmse, val_preds, val_targets
 
 
-def train_one_epoch_fusion(model, loader, optimizer, criterion, device, scale_target):
+def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target):
     model.train()
     total_loss = 0.0
     n_samples = 0
@@ -56,10 +58,13 @@ def train_one_epoch_fusion(model, loader, optimizer, criterion, device, scale_ta
             y = y / 100.0
 
         optimizer.zero_grad()
-        preds = model(imgs, tabs)
-        loss = criterion(preds, y)
-        loss.backward()
-        optimizer.step()
+        with torch.autocast(device_type="cuda"):
+            preds = model(imgs, tabs)
+            loss = criterion(preds, y)
+        
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item() * imgs.size(0)
         n_samples += imgs.size(0)

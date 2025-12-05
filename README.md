@@ -44,4 +44,11 @@ Pawpularity-Prediction-Experiments/
   - exp1.ipynb
   - exp2.ipynb
   - exp3.ipynb
+
+- src/
+  - config.py
+  - data.py
+  - models.py
+  - plot.py
+  - utils.py  
 - README.md

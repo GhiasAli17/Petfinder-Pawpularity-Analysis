@@ -64,12 +64,19 @@ class EarlyFusionNet(nn.Module):
     ):
         super(EarlyFusionNet, self).__init__()
 
+        self.backbone_name = backbone_name  
+
+        extra_kwargs = {}
+        # flexible size for Swin / ViT
+        if "swin" in backbone_name or "vit" in backbone_name:
+            extra_kwargs["img_size"] = img_size
+            extra_kwargs["dynamic_img_pad"] = True
+
         self.img_model = timm.create_model(
             backbone_name,
             pretrained=pretrained,
             num_classes=0,
-            img_size=img_size,
-            dynamic_img_pad=True,
+            **extra_kwargs,
         )
         img_out_dim = self.img_model.num_features
 
@@ -91,7 +98,7 @@ class EarlyFusionNet(nn.Module):
                 nn.Linear(fusion_hidden, 1),
             )
         else:
-            raise ValueError("Unknown head_type: %s" % head_type)
+            raise ValueError(f"Unknown head_type: {head_type}")
 
     def forward(self, img, tab):
         img_feat = self.img_model(img)
@@ -99,3 +106,62 @@ class EarlyFusionNet(nn.Module):
         fused = torch.cat([img_feat, tab_feat], dim=1)
         out = self.head(fused)
         return out
+
+
+# class EarlyFusionNet(nn.Module):
+#     """
+#     Vision backbone (features only) + tabular MLP encoder + fusion head.
+#     head_type: "linear" or "mlp".
+#     """
+#     def __init__(
+#         self,
+#         backbone_name,
+#         img_size,
+#         tab_input_dim,
+#         tab_hidden=64,
+#         fusion_hidden=256,
+#         head_type="mlp",
+#         pretrained=True,
+#     ):
+#         super(EarlyFusionNet, self).__init__()
+
+#         extra_kwargs = {}
+#         # flexible size for Swin.
+#         if "swin" in backbone_name or "vit" in backbone_name:
+#             extra_kwargs["img_size"] = img_size
+#             extra_kwargs["dynamic_img_pad"] = True
+
+#         self.img_model = timm.create_model(
+#             backbone_name,
+#             pretrained=pretrained,
+#             num_classes=0,
+#             **extra_kwargs,
+#         )
+#         img_out_dim = self.img_model.num_features
+
+#         self.tab_enc = nn.Sequential(
+#             nn.Linear(tab_input_dim, tab_hidden),
+#             nn.ReLU(),
+#             nn.Linear(tab_hidden, tab_hidden),
+#             nn.ReLU(),
+#         )
+#         tab_out_dim = tab_hidden
+
+#         fusion_in = img_out_dim + tab_out_dim
+#         if head_type == "linear":
+#             self.head = nn.Linear(fusion_in, 1)
+#         elif head_type == "mlp":
+#             self.head = nn.Sequential(
+#                 nn.Linear(fusion_in, fusion_hidden),
+#                 nn.ReLU(),
+#                 nn.Linear(fusion_hidden, 1),
+#             )
+#         else:
+#             raise ValueError("Unknown head_type: %s" % head_type)
+
+#     def forward(self, img, tab):
+#         img_feat = self.img_model(img)
+#         tab_feat = self.tab_enc(tab)
+#         fused = torch.cat([img_feat, tab_feat], dim=1)
+#         out = self.head(fused)
+#         return out

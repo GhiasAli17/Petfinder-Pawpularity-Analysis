@@ -151,11 +151,11 @@ def compare_oof_by_bins(
     # --- overall OOF RMSEs ---
     rmse_a_all = np.sqrt(((oof_a["ytrue"] - oof_a["oof_pred"])**2).mean())
     rmse_b_all = np.sqrt(((oof_b["ytrue"] - oof_b["oof_pred"])**2).mean())
-    oof_gap = rmse_a_all - rmse_b_all   # >0 ⇒ B better overall
+    oof_gap = rmse_b_all - rmse_a_all   # >0 ⇒ B better overall
 
     print(f"{label_a} OOF RMSE:", rmse_a_all)
     print(f"{label_b} OOF RMSE:", rmse_b_all)
-    print(f"ΔRMSE ({label_a} - {label_b}):", oof_gap)
+    print(f"ΔRMSE ({label_b} - {label_a}):", oof_gap)
 
     # --- bar plot per bin ---
     plt.figure(figsize=(8, 4))

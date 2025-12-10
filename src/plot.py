@@ -123,15 +123,20 @@ def compare_oof_by_bins(
         oof_b.groupby("bin", observed=False)[["ytrue", "oof_pred"]]
              .apply(lambda x: ((x["ytrue"] - x["oof_pred"])**2).mean()**0.5)
     )
-
+    
+    bin_counts = (
+        oof_a.groupby("bin", observed=False)["ytrue"]
+             .size()
+    )
     df = pd.DataFrame({
         "bin": rmse_a.index,
+        "count": bin_counts.values, 
         f"{label_a}_rmse": rmse_a.values,
         f"{label_b}_rmse": rmse_b.values,
     })
 
-    # diff: positive ⇒ B better (lower RMSE), because A - B > 0
-    df["rmse_diff"] = df[f"{label_a}_rmse"] - df[f"{label_b}_rmse"]
+   
+    df["rmse_diff"] = df[f"{label_b}_rmse"] - df[f"{label_a}_rmse"]
 
     # human-readable winner
     def winner(row):
@@ -151,7 +156,7 @@ def compare_oof_by_bins(
     # --- overall OOF RMSEs ---
     rmse_a_all = np.sqrt(((oof_a["ytrue"] - oof_a["oof_pred"])**2).mean())
     rmse_b_all = np.sqrt(((oof_b["ytrue"] - oof_b["oof_pred"])**2).mean())
-    oof_gap = rmse_b_all - rmse_a_all   # >0 ⇒ B better overall
+    oof_gap = rmse_b_all - rmse_a_all   
 
     print(f"{label_a} OOF RMSE:", rmse_a_all)
     print(f"{label_b} OOF RMSE:", rmse_b_all)

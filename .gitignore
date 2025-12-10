@@ -8,6 +8,7 @@ src/__pycache__/
 
 # Model checkpoints
 *.pth
+*.pt
 *.pkl
 
 # Virtual environments

@@ -90,6 +90,104 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+def plot_foldwise_rmse(df, y_col, pred_cols, fold_col="fold", title="Fold-wise RMSE Comparison"):
+    """
+    Plot fold-wise RMSE for multiple prediction columns.
+    """
+    folds = sorted(df[fold_col].unique())
+    results = {name: [] for name in pred_cols.keys()}
+
+    # compute RMSE per fold for each experiment
+    for fold in folds:
+        sub = df[df[fold_col] == fold]
+        y_true = sub[y_col].values
+        for exp_name, col in pred_cols.items():
+            rmse = np.sqrt(((y_true - sub[col].values) ** 2).mean())
+            results[exp_name].append(rmse)
+
+    # plot
+    plt.figure(figsize=(8, 5))
+    for exp_name, rmse_list in results.items():
+        plt.plot(folds, rmse_list, marker="o", label=exp_name)
+
+    plt.xlabel("Fold")
+    plt.ylabel("RMSE")
+    plt.title(title)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    
+    plt.xticks(folds)
+    plt.tight_layout()
+    plt.show()
+
+    return results
+
+
+def compare_oof_by_bins_multi(
+    df,
+    bins,
+    y_col="ytrue",
+    pred_cols=None,
+    title_prefix="",
+):
+    """
+    Compare multiple experiments' OOF RMSE across target bins.
+
+    """
+
+    if pred_cols is None:
+        raise ValueError("You must provide pred_cols mapping {label: column_name}")
+
+    # --- assign bins ---
+    df = df.copy()
+    df["bin"] = pd.cut(df[y_col], bins)
+
+    # --- per-bin RMSEs ---
+    rmse_per_bin = {}
+    for label, col in pred_cols.items():
+        rmse_bin = (
+            df.groupby("bin", observed=False)[[y_col, col]]
+              .apply(lambda x: np.sqrt(((x[y_col] - x[col])**2).mean()))
+        )
+        rmse_per_bin[label] = rmse_bin
+
+    # --- counts ---
+    bin_counts = df.groupby("bin", observed=False)[y_col].size()
+
+    # --- build summary dataframe ---
+    summary = pd.DataFrame({"bin": rmse_bin.index, "count": bin_counts.values})
+    for label, rmse_bin in rmse_per_bin.items():
+        summary[f"{label}_rmse"] = rmse_bin.values
+
+    # --- overall RMSEs ---
+    overall = {}
+    for label, col in pred_cols.items():
+        rmse_all = np.sqrt(((df[y_col] - df[col])**2).mean())
+        overall[label] = rmse_all
+        print(f"{label} OOF RMSE: {rmse_all:.4f}")
+
+    # --- bar plot per bin ---
+    plt.figure(figsize=(10, 5))
+    x = np.arange(len(summary))
+    width = 0.8 / len(pred_cols)  # distribute bars evenly
+
+    for i, label in enumerate(pred_cols.keys()):
+        plt.bar(x + i*width - (width*len(pred_cols))/2,
+                summary[f"{label}_rmse"], width, label=label)
+
+    plt.xticks(x, summary["bin"].astype(str), rotation=45)
+    plt.xlabel("Target bin")
+    plt.ylabel("RMSE")
+    title = "RMSE per bin"
+    if title_prefix:
+        title = f"{title_prefix} - {title}"
+    plt.title(title)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    return summary, overall     
+
 
 def compare_oof_by_bins(
     oof_path_a,

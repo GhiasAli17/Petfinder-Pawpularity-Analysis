@@ -23,6 +23,7 @@ pytorchenv/
 
 # Logs & outputs
 logs/
+extra/
 outputs/
 runs/
 *.log

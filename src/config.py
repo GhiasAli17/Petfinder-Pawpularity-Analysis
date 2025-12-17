@@ -62,4 +62,22 @@ EXP_CONFIGS = {
         "loss": "bce",
         "batch_size": 12,
     },
+     "exp6": {
+        **COMMON_CONFIG,
+        "name": "Exp6_EffB1_256_Lite",
+        "backbone": "efficientnet_b1",
+        "img_size": 256,
+        "aug": "lite",
+        "loss": "mse",
+        "batch_size": 32,
+    },
+    "exp8": {
+        **COMMON_CONFIG,
+        "name": "Exp8_EffB4_384_Strong",
+        "backbone": "efficientnet_b4",
+        "img_size": 384,
+        "aug": "strong",
+        "loss": "mse",
+        "batch_size": 32,
+    },
 }

@@ -141,20 +141,14 @@ def build_meta_oof(
 def train_meta_learner_oof(
     meta_df,
     model_name="lgbm",     
-    feature_prefix="p_",
+    feature_prefix="oof_",
     y_col="ytrue",
     fold_col="fold",
     model_params=None,
 ):
     """
-    Train a 2nd-level meta-learner on OOF features.
+    Train a 2nd-level meta-learner on OOF Predictions.
 
-    Returns:
-        oof_pred: np.ndarray (n_samples,)
-        global_rmse: float
-        fold_rmse: np.ndarray
-        fold_rmse_mean: float
-        fold_rmse_std: float
     """
     feature_cols = [c for c in meta_df.columns if c.startswith(feature_prefix)]
     X = meta_df[feature_cols].values
@@ -171,11 +165,10 @@ def train_meta_learner_oof(
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42,
-                verbosity=-1,        
-                force_col_wise=True, 
+                verbosity=-1,
+                force_col_wise=True,
             )
-        def make_model():
-            return LGBMRegressor(**model_params)
+        model = LGBMRegressor(**model_params)
 
     elif model_name == "xgb":
         if model_params is None:
@@ -186,54 +179,29 @@ def train_meta_learner_oof(
                 subsample=0.8,
                 colsample_bytree=0.8,
                 objective="reg:squarederror",
-                tree_method="hist",   
+                tree_method="hist",
                 random_state=42,
-                verbosity=0,              # no XGBoost logs
+                verbosity=0,
             )
-        def make_model():
-            return XGBRegressor(**model_params)
+        model = XGBRegressor(**model_params)
 
     elif model_name == "svr_gpu":
-        if model_params is None:
             model_params = dict(
                 C=20.0,
                 epsilon=0.1,
                 kernel="rbf",
             )
-        def make_model():
-            return cuSVR(**model_params)
+            model = cuSVR(**model_params)
 
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
-    # ----- CV OOF for meta-learner -----
-    oof_pred = np.zeros(len(meta_df))
-    fold_rmse_list = []
+    # ---- train on full data ----
+    model.fit(X, y)
 
-    for f in sorted(np.unique(folds)):
-        tr_idx = np.where(folds != f)[0]
-        va_idx = np.where(folds == f)[0]
+    # ---- evaluate ----
+    pred = model.predict(X)
+    pred = pred.ravel()
+    train_rmse = root_mean_squared_error(y, pred)
 
-        model = make_model()
-        model.fit(X[tr_idx], y[tr_idx])   
-
-        preds = model.predict(X[va_idx])
-        preds = np.asarray(preds).ravel()  
-
-        oof_pred[va_idx] = preds
-
-        rmse_fold = root_mean_squared_error(y[va_idx], preds)
-        fold_rmse_list.append(rmse_fold)
-        print(f"[{model_name}] Meta fold {f} RMSE: {rmse_fold:.4f}")
-
-    global_rmse = root_mean_squared_error(y, oof_pred)
-    fold_rmse = np.array(fold_rmse_list)
-    fold_rmse_mean = float(fold_rmse.mean())
-    fold_rmse_std = float(fold_rmse.std())
-
-    return oof_pred, global_rmse, fold_rmse, fold_rmse_mean, fold_rmse_std
-
-
-
-
-
+    return model, train_rmse, feature_cols

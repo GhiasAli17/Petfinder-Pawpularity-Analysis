@@ -7,12 +7,12 @@ from PIL import Image
 
 
 
-def plot_oof_true_pred_lines(oof_df, title_prefix=""):
+def plot_oof_true_pred_lines(oof_df,true_col="ytrue",pred_col="oof_pred", title_prefix=""):
     """
     Line plot of true and predicted Pawpularity over sample index.
     """
-    ytrue = oof_df["ytrue"].values
-    ypred = oof_df["oof_pred"].values
+    ytrue = oof_df[true_col].values
+    ypred = oof_df[pred_col].values
     idx = np.arange(len(ytrue))
 
     plt.figure(figsize=(10, 4))
@@ -34,7 +34,7 @@ def plot_oof_true_pred_lines(oof_df, title_prefix=""):
 
 
 
-def show_images_grid(oof_errors_df, img_folder, n=12, title_prefix=""):
+def show_images_grid(oof_errors_df, img_folder, n=12, title_prefix="", pred_col="oof_pred"):
     """
     Show top-n rows from a top-errors DataFrame as an image grid.
     """
@@ -46,7 +46,7 @@ def show_images_grid(oof_errors_df, img_folder, n=12, title_prefix=""):
     for i, row in enumerate(subset.itertuples(), start=1):
         img_id = row.Id
         ytrue = row.ytrue
-        ypred = row.oof_pred
+        ypred = getattr(row, pred_col)
         img_path = os.path.join(img_folder, f"{img_id}.jpg")
         img = Image.open(img_path).convert("RGB")
 
@@ -280,3 +280,4 @@ def compare_oof_by_bins(
     plt.show()
 
     return df, rmse_a_all, rmse_b_all, oof_gap
+

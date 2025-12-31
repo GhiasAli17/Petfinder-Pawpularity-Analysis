@@ -198,7 +198,7 @@ def run_single_fold(
         scale_target = True
     elif loss_name == "huber":
         criterion = torch.nn.SmoothL1Loss(beta=1.0) 
-        scale_target = False # Targets 0-100 are used directly    
+        scale_target = False # Targets 0-100 are used directly      
     else:
         criterion = torch.nn.MSELoss()
         scale_target = False

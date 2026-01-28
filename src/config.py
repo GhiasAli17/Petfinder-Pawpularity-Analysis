@@ -80,4 +80,16 @@ EXP_CONFIGS = {
         "loss": "mse",
         "batch_size": 32,
     },
+    "exp_cross_attn": {
+    **COMMON_CONFIG,
+    "name": "exp5_swin_mid_cross_attention_fusion_v2",
+    "backbone": "swin_large_patch4_window12_384",
+    "img_size": 384,
+    "aug": "strong",
+    "head_type": "mlp",      
+    "loss": "bce",
+    "batch_size": 12,
+    "mode": "cross_attn_fusion",
+},
+
 }

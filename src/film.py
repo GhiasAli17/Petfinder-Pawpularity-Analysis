@@ -37,10 +37,10 @@ class FiLM(nn.Module):
 
 class FiLMInternalModulation(nn.Module):
     """
-    - film_start_idx: apply FiLM starting from this block index.
-    - apply_to_all_after: if True, apply FiLM to all blocks >= film_start_idx;
+    - film_start_idx:  FiLM starting from this block index.
+    - apply_to_all_after: if True, FiLM will be applied to all blocks >= film_start_idx;
                           if False, only at film_start_idx.
-    - use_bn_affine: if False, disable BN affine(gamma and beta) so BN only normalizes
+    - use_bn_affine: if False,  BN affine(gamma and beta) will be disabled so BN only normalizes
                      and FiLM provides the affine(gamma and beta).
     """
     def __init__(
@@ -73,8 +73,8 @@ class FiLMInternalModulation(nn.Module):
         self.apply_to_all_after = apply_to_all_after
         self.use_bn_affine = use_bn_affine
 
-        # Optionally disable BN affine (gamma/beta) in blocks where FiLM is used.
-        # iterate through that block and set affine false a
+        # to disable BN affine (gamma/beta) in blocks where FiLM is used.
+        # iterating through that block and set affine false a
         if not self.use_bn_affine:
             if hasattr(self.backbone, "blocks"):
                 for idx, block in enumerate(self.backbone.blocks):
@@ -120,7 +120,7 @@ class FiLMInternalModulation(nn.Module):
             x = self.backbone.bn1(x)
             if getattr(self.backbone, "act1", None) is not None:
                 x = self.backbone.act1(x)
-             # Iterate over all backbone blocks 
+             # Iteration over all backbone blocks 
             for idx, block in enumerate(self.backbone.blocks):
                 x = block(x)  # x: (1, C_block, H_block, W_block)
                 use_film_here = (
@@ -148,7 +148,7 @@ class FiLMInternalModulation(nn.Module):
         )
 
     def _get_or_create_film(self, idx: int, x: torch.Tensor):
-        # now it's just a getter of film layer/block/stage
+        # to get the film layer/block/stage
         return self.film_layers[str(idx)]
 
     def _forward_features_with_film(self, x: torch.Tensor, tab_feat: torch.Tensor):
@@ -157,7 +157,7 @@ class FiLMInternalModulation(nn.Module):
         if getattr(self.backbone, "act1", None) is not None:
             x = self.backbone.act1(x)
                 
-        # Iterate over blocks and apply FiLM as per idx.
+        # loopiong over blocks and apply FiLM as per idx.
 
         for idx, block in enumerate(self.backbone.blocks):
             x = block(x)
@@ -166,9 +166,9 @@ class FiLMInternalModulation(nn.Module):
                 or (self.apply_to_all_after and idx > self.film_start_idx)
             )
             if use_film_here:
-                # Get the FiLM module corresponding to this block.
+                #  the FiLM module corresponding to this block index.
                 film = self._get_or_create_film(idx, x)
-                # Apply FiLM to modulate the current feature map x using tab_feat
+                #  FiLM to modulate the current feature map x using tab_feat
                 x = film(x, tab_feat)
 
         x = self.backbone.conv_head(x)
@@ -188,7 +188,7 @@ class FiLMInternalModulation(nn.Module):
     
     
 # ********* PART 2********************** 
-# FiLMExternalModulation: apply FiLM after backbone feature extraction, 
+# FiLMExternalModulation:  FiLM after backbone feature extraction, 
 # with extra FiLM-ed ResBlocks added on top (not in-place modulation of backbone blocks).    
 
 
@@ -236,7 +236,7 @@ class FiLMedResStack(nn.Module):
     """
     def __init__(self, num_blocks=4, channels=128, cond_dim=128):
         super().__init__()
-        # Create a list of FiLMedResBlock modules.
+        #  list of FiLMedResBlock modules.
         # Each block takes (x: (B, C, 14, 14), cond: (B, cond_dim))
         # and returns (B, C, 14, 14).
         self.blocks = nn.ModuleList([
@@ -251,7 +251,7 @@ class FiLMedResStack(nn.Module):
 
 class FiLMClassifier(nn.Module):
     """
-    Paper-style classifier:
+     classifier:
 
       Input: 128x14x14 
       1x1 conv: 128->512
@@ -282,7 +282,7 @@ class BackboneFeatureExtractor(nn.Module):
     """
     EfficientNet -> 128 x 14 x 14 feature map for FiLM external modulation.
 
-    Uses conv_stem + bn1 + act1 + blocks, then a 3x3 conv to 128 channels,
+     conv_stem + bn1 + act1 + blocks, then a 3x3 conv to 128 channels,
     then adaptive pooling to 14x14.
     """
     def __init__(self, backbone_name="efficientnet_b1", pretrained=True, freeze=False):

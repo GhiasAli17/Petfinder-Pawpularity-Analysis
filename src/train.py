@@ -1,5 +1,4 @@
 # src/train_utils.py
-from src.cross_attention import CrossAttentionFusion
 import numpy as np
 import torch
 from sklearn.metrics import root_mean_squared_error
@@ -13,7 +12,8 @@ from torch.utils.data import DataLoader
 
 
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
-from src.models import CrossAttentionFusionNet, MidCrossAttentionFusion, build_vision_backbone, EarlyFusionNet
+from src.models import build_vision_backbone, FeatureConcatFusionNet
+from src.film import FiLMExternalModulation, FiLMInternalModulation
 
 
 
@@ -136,12 +136,17 @@ def run_single_fold(
     workers=8,
     pin_memory=True,
     persistent_workers=False,
+    ##film related parameter
+    film_start_idx=5,                   # choose based on EfficientNet stage
+    apply_to_all_after=False,            # True: apply FiLM to all blocks >= idx, False: only at idx
+    use_bn_affine=False,  
+    freeze_backbone=False
 ):
     """
     Run ONE fold and return (best_rmse, val_preds, val_ids, val_targets).
 
     mode="image":  ImageOnlyDataset + build_vision_backbone + train_one_epoch_image / validate_image
-    mode="fusion": ImageTabDataset  + EarlyFusionNet      + train_one_epoch_fusion / validate_fusion
+    mode="fusion": ImageTabDataset  + FeatureConcatFusionNet      + train_one_epoch_fusion / validate_fusion
     """
     backbone_name = cfg["backbone"]
     img_size = cfg["img_size"]
@@ -159,7 +164,7 @@ def run_single_fold(
     if mode == "image":
         train_ds = ImageOnlyDataset(train_df, img_folder, train_tf)
         val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf)
-    elif mode == "fusion" or mode == "cross_attn_fusion":
+    elif mode == "fusion" or mode == "cross_attn_fusion" or "film" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)
         val_ds   = ImageTabDataset(val_df,   img_folder, tab_cols, val_tf)
@@ -177,30 +182,43 @@ def run_single_fold(
         pin_memory=pin_memory, persistent_workers=persistent_workers,
     )
 
-    if mode == "image":
+    if mode == "image": #it means only image model without metadata and without fusion
         model = build_vision_backbone(
             backbone_name, img_size, mode="regression"
         ).to(device)
-    elif mode == "cross_attn_fusion":
-        model = CrossAttentionFusion(
-            backbone_name=backbone_name,
+    elif mode == "film_fusion": # it shows FiLM modulating internal blocks of Image Backbone
+        model = FiLMInternalModulation(
+            backbone_name=backbone_name,        # e.g., "tf_efficientnet_b1"
             img_size=img_size,
             tab_input_dim=len(tab_cols),
             tab_hidden=64,
-            d_model=256,
-            num_heads=4,
-            num_layers=2,
+            film_start_idx=film_start_idx,                   # choose based on EffB1 block count
+            apply_to_all_after=apply_to_all_after,            # True: all blocks >= idx, False: only at idx
             head_hidden=256,
             pretrained=True,
-        ).to(device)    
-    else:  # fusion
-        model = EarlyFusionNet(
+            use_bn_affine=use_bn_affine,                # False => BN only normalizes, FiLM affine
+        ).to(device)
+    elif mode == "film_stack_effb1": # it shows the FiLM applied after feature extraction from the image backbone and FiLM extra Blocks are added 
+        model = FiLMExternalModulation(
+            backbone_name=backbone_name,
+            tab_input_dim=len(tab_cols),
+            tab_hidden=64,
+            num_film_blocks=4,
+            # head_hidden=256,
+            pretrained_backbone=True,
+            freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1
+        ).to(device)          
+    else:  # fusion concat based without FiLM
+        model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
             img_size=img_size,
             tab_input_dim=len(tab_cols),
             head_type=cfg["head_type"],
             pretrained=True,
+             freeze_backbone=freeze_backbone,
         ).to(device)
+
+
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay
@@ -209,25 +227,6 @@ def run_single_fold(
     if loss_name == "bce":
         criterion = torch.nn.BCEWithLogitsLoss()
         scale_target = True
-    elif loss_name == "huber":
-        criterion = torch.nn.SmoothL1Loss(beta=1.0) 
-        scale_target = False # Targets 0-100 are used directly   
-    elif loss_name == "mse_huber":########
-        criterion = MSEHuberLoss(alpha=0.5, beta=1.0)
-        scale_target = False       
-    elif loss_name == "focal":
-        criterion = BinaryFocalLoss(alpha=1.0, gamma=2.0, reduction="mean")
-        scale_target = True
-    elif loss_name == "sera":
-        relevance_weights = {
-            (0, 20): 1.5,
-            (20, 40): 1.0,
-            (40, 60): 1.0,
-            (60, 80): 1.5,
-            (80, 100): 2.0,
-        }
-        criterion = SERALoss(relevance_weights=relevance_weights)
-        scale_target = False
     else:
         criterion = torch.nn.MSELoss()
         scale_target = False
@@ -263,10 +262,7 @@ def run_single_fold(
         train_losses.append(avg_train_loss)
         val_rmses.append(rmse)
 
-        # print(
-        #     f"Epoch {epoch+1}/{epochs} | Fold {fold} "
-        #     f"TrainLoss: {avg_train_loss:.4f} ValRMSE: {rmse:.4f}"
-        # )
+
         display_train = (
             f"RMSE={np.sqrt(avg_train_loss):.4f}"
             if loss_name == "mse"
@@ -330,78 +326,3 @@ def run_single_fold(
     return best_rmse, np.array(val_preds), np.array(val_targets), val_ids
 
 
-
-
-#######################################################
-import torch.nn as nn
-
-class MSEHuberLoss(nn.Module):
-    def __init__(self, alpha=0.5, beta=1.0):
-        """
-        alpha: weight for Huber loss (0.0 -> pure MSE, 1.0 -> pure Huber)
-        beta: parameter for SmoothL1Loss 
-        """
-        super().__init__()
-        self.mse = nn.MSELoss()
-        self.huber = nn.SmoothL1Loss(beta=beta)
-        self.alpha = alpha
-
-    def forward(self, preds, targets):
-        mse_loss = self.mse(preds, targets)
-        huber_loss = self.huber(preds, targets)
-        return self.alpha * huber_loss + (1 - self.alpha) * mse_loss
-
-import torch
-
-
-class SERALoss(nn.Module):
-    def __init__(self, relevance_weights=None):
-        """
-        relevance_weights: dict mapping bin ranges or target thresholds to weights
-        Example: {(0,20):1.0, (20,40):1.0, (40,60):1.2, (60,80):1.5, (80,100):2.0}
-        """
-        super().__init__()
-        self.relevance_weights = relevance_weights if relevance_weights else {}
-
-    def forward(self, preds, targets):
-        # Squared error
-        errors = (preds - targets) ** 2
-
-        # Default weight = 1
-        weights = torch.ones_like(errors)
-
-        # Apply bin-specific weights
-        for (low, high), w in self.relevance_weights.items():
-            mask = (targets >= low) & (targets < high)
-            weights[mask] = w
-
-        # Weighted mean squared error
-        loss = torch.mean(weights * errors)
-        return loss
-
-
-import torch.nn.functional as F
-
-class BinaryFocalLoss(nn.Module):
-    def __init__(self, alpha=1.0, gamma=2.0, reduction="mean"):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        # inputs: logits, targets: in [0,1]
-        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-        probs = torch.sigmoid(inputs)
-        pt = targets * probs + (1 - targets) * (1 - probs)
-        focal_weight = self.alpha * (1 - pt) ** self.gamma
-        loss = focal_weight * bce_loss
-
-        if self.reduction == "mean":
-            return loss.mean()
-        elif self.reduction == "sum":
-            return loss.sum()
-        else:
-            return loss
-
-################################################################

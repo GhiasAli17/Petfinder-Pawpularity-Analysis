@@ -8,7 +8,7 @@ The main flow of each experiment is inside the notebooks folder
 1. Image input & augmentation  
 2. Vision backbone (EfficientNet, Swin)  
 3. Tabular metadata model (MLP, LightGBM/XGBoost)  
-4. Fusion (early vs late)  
+4. Fusion (feature-based concat fusion vs late prediction based fusion)  
 5. Prediction head (linear vs MLP)  
 6. Ensemble (single, multi, stacking)
 
@@ -16,14 +16,14 @@ The main flow of each experiment is inside the notebooks folder
 - Exp0: Baseline Ridge fusion  
 - Exp1: Tabular-only (GBDT)  
 - Exp2–3: CNN / Swin only  
-- Exp4–5: Early fusion  
+- Exp4–5: feature-based concat fusion  
 - Exp6–7: Late fusion  
 - Exp8–11: High-res + ensembles
 
 ## Graphs
 - Figure 1: Pipeline
 ![alt text](graphs/Fig_Pipline.png)
-- Figure 2: Early Fusion
+- Figure 2: feature-based concat Fusion
 ![alt text](graphs/Fig_Early_Fusion.png)
 - Figure 3: Late Fusion
 ![alt text](graphs/Fig_Late_Fusion.png)

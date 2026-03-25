@@ -82,7 +82,183 @@ def plot_all_folds_history(out_dir, folds, title_prefix=""):
     plt.grid(alpha=0.3)
     plt.tight_layout()
     plt.show()
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
 
+
+def plot_train_val_history(out_dir, folds, title_prefix=""):
+    n_folds = len(folds)
+    n_rows, n_cols = 2, 3
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 8), sharex=False, sharey=False)
+    axes = axes.flatten()
+
+    for i, fold in enumerate(folds):
+        ax = axes[i]
+        hist_path = os.path.join(out_dir, f"history_fold{fold}.csv")
+        if not os.path.exists(hist_path):
+            ax.set_visible(False)
+            continue
+
+        hist = pd.read_csv(hist_path)
+        epochs = hist["epoch"].values
+        train_rmse = hist["train_rmse"].values
+        val_rmse = hist["val_rmse"].values
+
+        ax.plot(epochs, train_rmse, label="Train RMSE", color="tab:blue")
+        ax.plot(epochs, val_rmse, label="Val RMSE", color="tab:orange")
+
+        # min train RMSE
+        train_min_idx = np.argmin(train_rmse)
+        train_min_epoch = epochs[train_min_idx]
+        train_min_val = train_rmse[train_min_idx]
+        ax.scatter(train_min_epoch, train_min_val, color="tab:blue", zorder=5)
+        ax.annotate(
+            f"{train_min_val:.2f}",
+            xy=(train_min_epoch, train_min_val),
+            xytext=(5, 5), textcoords="offset points",
+            fontsize=8, color="tab:blue"
+        )
+
+        # min val RMSE
+        val_min_idx = np.argmin(val_rmse)
+        val_min_epoch = epochs[val_min_idx]
+        val_min_val = val_rmse[val_min_idx]
+        ax.scatter(val_min_epoch, val_min_val, color="tab:orange", zorder=5)
+        ax.annotate(
+            f"{val_min_val:.2f}",
+            xy=(val_min_epoch, val_min_val),
+            xytext=(5, -12), textcoords="offset points",
+            fontsize=8, color="tab:orange"
+        )
+
+        ax.set_title(f"Fold {fold}")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("RMSE")
+        ax.legend(loc="upper right", fontsize=9)  # legend inside each subplot
+        ax.grid(alpha=0.3)
+
+    for j in range(n_folds, n_rows * n_cols):
+        axes[j].set_visible(False)
+
+    main_title = "Train vs Val RMSE"
+    if title_prefix:
+        main_title = f"{title_prefix} - {main_title}"
+    fig.suptitle(main_title, fontsize=13)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_compare_two_experiments(
+    out_dir_a, out_dir_b,
+    folds,
+    label_a="Exp A",
+    label_b="Exp B",
+):
+    """
+    Compare two experiments side by side per fold.
+    Layout: 5 rows x 2 cols
+      - Left col:  Exp A
+      - Right col: Exp B
+    Each subplot shows Train RMSE and Val RMSE with min annotations.
+    """
+    n_folds = len(folds)
+    n_rows, n_cols = n_folds, 2
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4 * n_folds))
+
+    for i, fold in enumerate(folds):
+        for j, (out_dir, label) in enumerate([(out_dir_a, label_a), (out_dir_b, label_b)]):
+            ax = axes[i][j]
+            hist_path = os.path.join(out_dir, f"history_fold{fold}.csv")
+
+            if not os.path.exists(hist_path):
+                ax.set_visible(False)
+                continue
+
+            hist = pd.read_csv(hist_path)
+            epochs     = hist["epoch"].values
+            train_rmse = hist["train_rmse"].values
+            val_rmse   = hist["val_rmse"].values
+
+            ax.plot(epochs, train_rmse, label="Train RMSE", color="tab:blue")
+            ax.plot(epochs, val_rmse,   label="Val RMSE",   color="tab:orange")
+
+            # min train RMSE
+            train_min_idx   = np.argmin(train_rmse)
+            train_min_epoch = epochs[train_min_idx]
+            train_min_val   = train_rmse[train_min_idx]
+            ax.scatter(train_min_epoch, train_min_val, color="tab:blue", zorder=5)
+            ax.annotate(
+                f"{train_min_val:.2f}",
+                xy=(train_min_epoch, train_min_val),
+                xytext=(5, 5), textcoords="offset points",
+                fontsize=8, color="tab:blue"
+            )
+
+            # min val RMSE
+            val_min_idx   = np.argmin(val_rmse)
+            val_min_epoch = epochs[val_min_idx]
+            val_min_val   = val_rmse[val_min_idx]
+            ax.scatter(val_min_epoch, val_min_val, color="tab:orange", zorder=5)
+            ax.annotate(
+                f"{val_min_val:.2f}",
+                xy=(val_min_epoch, val_min_val),
+                xytext=(5, -12), textcoords="offset points",
+                fontsize=8, color="tab:orange"
+            )
+
+            ax.set_title(f"{label} - Fold {fold}")
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("RMSE")
+            ax.legend(loc="upper right", fontsize=9)
+            ax.grid(alpha=0.3)
+    fig.text(
+        0.5, 1.01,
+        f"{label_a}  vs  {label_b}",
+        ha="center", va="bottom",
+        fontsize=13, fontweight="bold"
+    )
+    plt.tight_layout(rect=[0, 0, 1, 1])
+    plt.subplots_adjust(hspace=0.55)
+
+    plt.show()
+
+
+
+
+def plot_train_val_per_fold(out_dir, folds, title_prefix=""):
+    """
+    For each fold, create one figure with:
+      - train_loss (MSE) vs epoch
+      - val_rmse vs epoch
+    """
+    for fold in folds:
+        hist_path = os.path.join(out_dir, f"history_fold{fold}.csv")
+        if not os.path.exists(hist_path):
+            print(f"history for fold {fold} not found, skipping.")
+            continue
+
+        hist = pd.read_csv(hist_path)
+        epochs = hist["epoch"].values
+        train_loss = hist["train_rmse"].values
+        val_rmse = hist["val_rmse"].values
+
+        plt.figure(figsize=(6, 4))
+        plt.plot(epochs, train_loss, label="Train MSE", color="tab:blue")
+        plt.plot(epochs, val_rmse, label="Val RMSE", color="tab:orange")
+
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss / RMSE")
+        title = f"Fold {fold} - Train vs Val"
+        if title_prefix:
+            title = f"{title_prefix} - {title}"
+        plt.title(title)
+        plt.legend()
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.show()
 
 
 import os

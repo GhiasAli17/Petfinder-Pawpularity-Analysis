@@ -1,6 +1,6 @@
 from torch.utils.data import DataLoader
 from src.data import build_transforms, ImageTabDataset
-from src.models import EarlyFusionNet
+from src.models import FeatureConcatFusionNet
 from sklearn.metrics import root_mean_squared_error
 import torch.nn as nn
 import torch
@@ -42,7 +42,7 @@ def infer_test_ensemble(test_df, img_folder, cfg, out_dir, device, tab_cols, wor
 
     for fold in range(1, cfg["n_splits"] + 1):
 
-        model = EarlyFusionNet(
+        model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
             img_size=img_size,
             tab_input_dim=len(tab_cols),

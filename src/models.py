@@ -39,7 +39,7 @@ def build_vision_backbone(name, img_size, mode):
         raise ValueError(f"Unknown mode: {mode}")
     return model
 
-class EarlyFusionNet(nn.Module):
+class FeatureConcatFusionNet(nn.Module):
     """
     Vision backbone (features only) + tabular MLP encoder + fusion head.
     head_type: "linear" or "mlp".
@@ -53,8 +53,9 @@ class EarlyFusionNet(nn.Module):
         fusion_hidden=256,
         head_type="mlp",
         pretrained=True,
+        freeze_backbone=False
     ):
-        super(EarlyFusionNet, self).__init__()
+        super(FeatureConcatFusionNet, self).__init__()
 
         self.backbone_name = backbone_name  
 
@@ -71,6 +72,9 @@ class EarlyFusionNet(nn.Module):
             **extra_kwargs,
         )
         img_out_dim = self.img_model.num_features
+        if freeze_backbone:
+            for p in self.img_model.parameters():
+                p.requires_grad = False
 
         self.tab_enc = nn.Sequential(
             nn.Linear(tab_input_dim, tab_hidden),
@@ -114,4 +118,7 @@ class TabularMLP(nn.Module):
     def forward(self, x):
         return self.net(x)
     
+
+
+
 

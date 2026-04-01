@@ -53,7 +53,8 @@ class FiLMInternalModulation(nn.Module):
         apply_to_all_after: bool = True, #apply FiLM to all blocks >= film_start_idx
         head_hidden: int = 256, # head dimension
         pretrained: bool = True, # finetune from pretrained backbone
-        use_bn_affine: bool = True, # whether to use gamma and beta from Batch Norm, or disable and rely on FiLM for affine transformation(gamma/beta)
+        use_bn_affine: bool = True,  # whether to use gamma and beta from Batch Norm, or disable and rely on FiLM for affine transformation(gamma/beta)
+        freeze_backbone: bool = False, # whether to freeze the backbone weights (except FiLM layers) or finetune them
     ):
         super().__init__()
 
@@ -69,7 +70,13 @@ class FiLMInternalModulation(nn.Module):
             **extra_kwargs,
         )
 
-        self.film_start_idx = film_start_idx
+        if freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+
+
+
+        self.film_start_idx = film_start_idx  
         self.apply_to_all_after = apply_to_all_after
         self.use_bn_affine = use_bn_affine
 
@@ -361,7 +368,7 @@ class FiLMExternalModulation(nn.Module):
         super().__init__()
 
     
-        if backbone_name == "efficientnet_b1":
+        if backbone_name == "efficientnet_b1" or backbone_name == "efficientnet_b4":
             self.backbone = BackboneFeatureExtractor(
                 backbone_name=backbone_name,
                 pretrained=pretrained_backbone,

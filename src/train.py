@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
-from src.models import build_vision_backbone, FeatureConcatFusionNet
+from src.models import  build_vision_backbone, FeatureConcatFusionNet
 from src.film import FiLMExternalModulation, FiLMInternalModulation
 
 
@@ -123,6 +123,7 @@ def extract_image_tab_features(loader, backbone, device):
     return img_feats, tab_feats, y
 
 
+
 def run_single_fold(
     fold,
     train_df,
@@ -133,7 +134,7 @@ def run_single_fold(
     device,
     mode,               # "image" or "fusion"
     tab_cols=None,
-    workers=8,
+    workers=8,         
     pin_memory=True,
     persistent_workers=False,
     ##film related parameter
@@ -164,7 +165,7 @@ def run_single_fold(
     if mode == "image":
         train_ds = ImageOnlyDataset(train_df, img_folder, train_tf)
         val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf)
-    elif mode == "fusion" or mode == "cross_attn_fusion" or "film" in mode:
+    elif mode == "fusion" or "film" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)
         val_ds   = ImageTabDataset(val_df,   img_folder, tab_cols, val_tf)
@@ -182,6 +183,7 @@ def run_single_fold(
         pin_memory=pin_memory, persistent_workers=persistent_workers,
     )
 
+
     if mode == "image": #it means only image model without metadata and without fusion
         model = build_vision_backbone(
             backbone_name, img_size, mode="regression"
@@ -197,8 +199,9 @@ def run_single_fold(
             head_hidden=256,
             pretrained=True,
             use_bn_affine=use_bn_affine,                # False => BN only normalizes, FiLM affine
+            freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1,True -> Freezen backbone entirely 
         ).to(device)
-    elif mode == "film_stack_effb1": # it shows the FiLM applied after feature extraction from the image backbone and FiLM extra Blocks are added 
+    elif mode == "film_stack_effb1" or mode == "film_stack_effb4": # it shows the FiLM applied after feature extraction from the image backbone and FiLM extra Blocks are added 
         model = FiLMExternalModulation(
             backbone_name=backbone_name,
             tab_input_dim=len(tab_cols),
@@ -207,7 +210,7 @@ def run_single_fold(
             # head_hidden=256,
             pretrained_backbone=True,
             freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1
-        ).to(device)          
+        ).to(device)            
     else:  # fusion concat based without FiLM
         model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
@@ -215,7 +218,7 @@ def run_single_fold(
             tab_input_dim=len(tab_cols),
             head_type=cfg["head_type"],
             pretrained=True,
-             freeze_backbone=freeze_backbone,
+            freeze_backbone=freeze_backbone,
         ).to(device)
 
 
@@ -324,5 +327,6 @@ def run_single_fold(
     gc.collect()
 
     return best_rmse, np.array(val_preds), np.array(val_targets), val_ids
+
 
 

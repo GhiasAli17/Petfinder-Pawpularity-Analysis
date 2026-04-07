@@ -1,7 +1,9 @@
+#film.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import timm  
+from src.tab_encoder import build_tab_encoder
 
 
 class FiLM(nn.Module):
@@ -55,6 +57,7 @@ class FiLMInternalModulation(nn.Module):
         pretrained: bool = True, # finetune from pretrained backbone
         use_bn_affine: bool = True,  # whether to use gamma and beta from Batch Norm, or disable and rely on FiLM for affine transformation(gamma/beta)
         freeze_backbone: bool = False, # whether to freeze the backbone weights (except FiLM layers) or finetune them
+        tab_encoder_capacity: str = "small", # "small" or "big" tab encoder MLP capacity/architecture
     ):
         super().__init__()
 
@@ -105,12 +108,14 @@ class FiLMInternalModulation(nn.Module):
                                 m.bias.requires_grad = False
 
         # Tabular encoder to project raw tabular feature to projected dim for FiLM conditioning
-        self.tab_enc = nn.Sequential(
-            nn.Linear(tab_input_dim, tab_hidden),
-            nn.ReLU(),
-            nn.Linear(tab_hidden, tab_hidden),
-            nn.ReLU(),
-        )
+        # self.tab_enc = nn.Sequential(
+        #     nn.Linear(tab_input_dim, tab_hidden),
+        #     nn.ReLU(),
+        #     nn.Linear(tab_hidden, tab_hidden),
+        #     nn.ReLU(),
+        # )
+       
+        self.tab_enc = build_tab_encoder(tab_input_dim, tab_hidden, tab_encoder_capacity)
         self.film_cond_dim = tab_hidden
 
         # --- PREBUILD FiLM modules here using a dummy forward ---
@@ -364,6 +369,8 @@ class FiLMExternalModulation(nn.Module):
         num_film_blocks: int = 4,
         pretrained_backbone: bool = True,
         freeze_backbone: bool = False,
+        tab_encoder_capacity: str = "small",
+        
     ):
         super().__init__()
 
@@ -378,12 +385,13 @@ class FiLMExternalModulation(nn.Module):
             raise ValueError(f"Unknown backbone_name: {backbone_name}")
 
         # Tabular encoder produces conditioning vector (plays the role of GRU embedding)
-        self.tab_enc = nn.Sequential(
-            nn.Linear(tab_input_dim, tab_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(tab_hidden, tab_hidden),
-            nn.ReLU(inplace=True),
-        )
+        # self.tab_enc = nn.Sequential(
+        #     nn.Linear(tab_input_dim, tab_hidden),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(tab_hidden, tab_hidden),
+        #     nn.ReLU(inplace=True),
+        # )
+        self.tab_enc = build_tab_encoder(tab_input_dim, tab_hidden, tab_encoder_capacity)
 
         # 4 FiLMed residual blocks on 128x14x14
         self.film_stack = FiLMedResStack(

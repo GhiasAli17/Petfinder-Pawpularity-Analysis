@@ -7,6 +7,7 @@ import os
 import numpy as np
 import pandas as pd
 from sklearn.metrics import root_mean_squared_error
+from src.tab_encoder import build_tab_encoder
 
 
 
@@ -53,7 +54,8 @@ class FeatureConcatFusionNet(nn.Module):
         fusion_hidden=256,
         head_type="mlp",
         pretrained=True,
-        freeze_backbone=False
+        freeze_backbone=False,
+        tab_encoder_capacity="small", # #small or big tab encoder MLP, small is default (2-layer MLP), big is deeper/wider (5-layer)
     ):
         super(FeatureConcatFusionNet, self).__init__()
 
@@ -76,12 +78,19 @@ class FeatureConcatFusionNet(nn.Module):
             for p in self.img_model.parameters():
                 p.requires_grad = False
 
-        self.tab_enc = nn.Sequential(
-            nn.Linear(tab_input_dim, tab_hidden),
-            nn.ReLU(),
-            nn.Linear(tab_hidden, tab_hidden),
-            nn.ReLU(),
-        )
+    
+        # self.tab_enc = nn.Sequential(
+        #     nn.Linear(tab_input_dim, tab_hidden),
+        #     nn.ReLU(),
+        #     nn.Linear(tab_hidden, tab_hidden),
+        #     nn.ReLU(),
+        # )
+        self.tab_enc = build_tab_encoder(
+        input_dim=tab_input_dim,
+        hidden_dim=tab_hidden,
+        tab_encoder_capacity=tab_encoder_capacity)
+         
+        
         tab_out_dim = tab_hidden
 
         fusion_in = img_out_dim + tab_out_dim
@@ -104,17 +113,18 @@ class FeatureConcatFusionNet(nn.Module):
         return out
 
 
-class TabularMLP(nn.Module):
-    def __init__(self, input_dim, hidden1=64, hidden2=32, out_dim=1):
-        super(TabularMLP, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden1),
-            nn.ReLU(),
-            nn.Linear(hidden1, hidden2),
-            nn.ReLU(),
-            nn.Linear(hidden2, out_dim),
-        )
+# class TabularMLP(nn.Module):
+#     def __init__(self, input_dim, hidden1=64, hidden2=32, out_dim=1):
+#         super(TabularMLP, self).__init__()
+#         self.net = nn.Sequential(
+#             nn.Linear(input_dim, hidden1),
+#             nn.ReLU(),
+#             nn.Linear(hidden1, hidden2),
+#             nn.ReLU(),
+#             nn.Linear(hidden2, out_dim),
+#         )
 
-    def forward(self, x):
-        return self.net(x)
+#     def forward(self, x):
+#         return self.net(x)
     
+

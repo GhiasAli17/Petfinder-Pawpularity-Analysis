@@ -123,7 +123,7 @@ def extract_image_tab_features(loader, backbone, device):
     return img_feats, tab_feats, y
 
 
-
+from src.tab_encoder import load_glove_model, build_pets_metadata_glove
 def run_single_fold(
     fold,
     train_df,
@@ -137,11 +137,12 @@ def run_single_fold(
     workers=8,         
     pin_memory=True,
     persistent_workers=False,
+    tab_encoder_capacity="small", # for tab encoder MLP, "small" is 2-layer MLP, "big" is deeper/wider 5-layer MLP
     ##film related parameter
     film_start_idx=5,                   # choose based on EfficientNet stage
     apply_to_all_after=False,            # True: apply FiLM to all blocks >= idx, False: only at idx
     use_bn_affine=False,  
-    freeze_backbone=False
+    freeze_backbone=False,
 ):
     """
     Run ONE fold and return (best_rmse, val_preds, val_ids, val_targets).
@@ -200,6 +201,7 @@ def run_single_fold(
             pretrained=True,
             use_bn_affine=use_bn_affine,                # False => BN only normalizes, FiLM affine
             freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1,True -> Freezen backbone entirely 
+            tab_encoder_capacity=tab_encoder_capacity, # "small" or "big" for tab encoder MLP
         ).to(device)
     elif mode == "film_stack_effb1" or mode == "film_stack_effb4": # it shows the FiLM applied after feature extraction from the image backbone and FiLM extra Blocks are added 
         model = FiLMExternalModulation(
@@ -210,10 +212,13 @@ def run_single_fold(
             # head_hidden=256,
             pretrained_backbone=True,
             freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1
+            tab_encoder_capacity=tab_encoder_capacity, # "small" or "big" for tab encoder MLP
+
         ).to(device)            
     else:  # fusion concat based without FiLM
-        model = FeatureConcatFusionNet(
+         model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
+            tab_encoder_capacity=tab_encoder_capacity, # "small" or "big" for tab encoder MLP
             img_size=img_size,
             tab_input_dim=len(tab_cols),
             head_type=cfg["head_type"],

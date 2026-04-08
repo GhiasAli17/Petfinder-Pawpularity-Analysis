@@ -424,3 +424,78 @@ def analyze_film_per_sample(
             # plt.savefig(fname, dpi=150, bbox_inches="tight")
             plt.show()
             # print(f"Saved {fname}")
+
+
+def plot_gamma_beta_per_channel(
+    gamma: dict,   # dict[int -> (N, C)]
+    beta: dict,    # dict[int -> (N, C)]
+    exp_name: str,
+    out_dir: str,
+):
+    """
+    For each FiLM block, plot per-channel mean ± std of γ and β:
+
+      - Top: γ mean/std across samples for each channel (identity line γ=1)
+      - Bottom: β mean/std across samples for each channel (identity line β=0)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    block_ids = sorted(gamma.keys())
+
+    for block_idx in block_ids:
+        g = gamma[block_idx]   # (N, C)
+        b = beta[block_idx]    # (N, C)
+
+        # compute per-channel stats across samples
+        gamma_mean = g.mean(axis=0)  # (C,)
+        gamma_std  = g.std(axis=0)   # (C,)
+        beta_mean  = b.mean(axis=0)  # (C,)
+        beta_std   = b.std(axis=0)   # (C,)
+
+        C = g.shape[1]
+        ch = np.arange(C)           # channel indices 0..C-1
+
+        fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+
+        # ---- γ per channel ----
+        ax = axes[0]
+        ax.plot(ch, gamma_mean, color="steelblue", label="mean γ")
+        ax.fill_between(
+            ch,
+            gamma_mean - gamma_std,
+            gamma_mean + gamma_std,
+            color="steelblue",
+            alpha=0.2,
+            label="±1 std",
+        )
+        ax.axhline(1.0, color="gray", linestyle="--", linewidth=1,
+                   label="identity (γ=1)")
+        ax.set_ylabel("γ value")
+        ax.set_title(f"block {block_idx} — γ per channel")
+        ax.legend()
+
+        # ---- β per channel ----
+        ax = axes[1]
+        ax.plot(ch, beta_mean, color="salmon", label="mean β")
+        ax.fill_between(
+            ch,
+            beta_mean - beta_std,
+            beta_mean + beta_std,
+            color="salmon",
+            alpha=0.2,
+            label="±1 std",
+        )
+        ax.axhline(0.0, color="gray", linestyle="--", linewidth=1,
+                   label="identity (β=0)")
+        ax.set_xlabel("Channel index")
+        ax.set_ylabel("β value")
+        ax.set_title(f"block {block_idx} — β per channel")
+        ax.legend()
+
+        plt.tight_layout()
+        fname = os.path.join(
+            out_dir,
+            f"block{block_idx}_gamma_beta_per_channel_{exp_name}.png",
+        )
+        # plt.savefig(fname, dpi=150, bbox_inches="tight")
+        plt.show()
+        # print("Saved", fname)

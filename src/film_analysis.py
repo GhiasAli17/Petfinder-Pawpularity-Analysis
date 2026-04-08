@@ -10,9 +10,9 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 
-# ─────────────────────────────────────────────────────────────
+
 # HOOKS: collect gamma, beta, feature before/after FiLM
-# ─────────────────────────────────────────────────────────────
+
 
 class FiLMAnalysisHooks:
     """
@@ -94,7 +94,7 @@ def collect_film_stats(model, val_loader, device, max_batches=None):
 
     Returns
     -------
-    gamma, beta, feat_before, feat_after : dict[int -> array]
+    gamma, beta, feat_before, feat_after 
     """
     hooks = FiLMAnalysisHooks(model) # attach hooks to all FiLM modules in the model
     model.eval()
@@ -113,10 +113,10 @@ def collect_film_stats(model, val_loader, device, max_batches=None):
 
 
 # ─────────────────────────────────────────────────────────────
-# CASE A1: per-experiment, per-FiLM-block histograms + tables
+# FiLM1: per-experiment, per-FiLM-block histograms + tables
 # ─────────────────────────────────────────────────────────────
 
-def case_A_per_block(
+def analyze_film_per_block(
     gamma: dict, # dict[int -> (N, C)]
     beta: dict, # dict[int -> (N, C)]
     feat_before: dict, # dict[int -> (N, C, H, W)]
@@ -146,7 +146,7 @@ def case_A_per_block(
         fb = feat_before[block_idx] # (N, C, H, W)
         fa = feat_after[block_idx]  # (N, C, H, W)
 
-        print(f"\n[Case A] Block {block_idx}  — {exp_name}")
+        print(f"\n[FiLM] Block {block_idx}  — {exp_name}")
         print(f"  gamma shape:       {g.shape}")
         print(f"  beta shape:        {b.shape}")
         print(f"  feat_before shape: {fb.shape}")
@@ -157,7 +157,7 @@ def case_A_per_block(
         b_flat = b.reshape(-1)
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        fig.suptitle(f"[Case A] γ/β Histograms — Block {block_idx} — {exp_name}",
+        fig.suptitle(f"[FiLM] γ/β Histograms — Block {block_idx} — {exp_name}",
                      fontsize=13)
 
         axes[0].hist(g_flat, bins=80, color="cornflowerblue",
@@ -186,12 +186,10 @@ def case_A_per_block(
         fig, ax = plt.subplots(1, 1, figsize=(8, 4))
         ax.hist(fb_flat, bins=80, alpha=0.5, label="before", color="steelblue",
                 edgecolor="white")
-        # vmin, vmax = np.percentile(fb_flat, [1, 99])
-        # ax.set_xlim(vmin, vmax)
+        
         ax.hist(fa_flat, bins=80, alpha=0.5, label="after",  color="darkorange",
                 edgecolor="white")
-        # vmin, vmax = np.percentile(fa_flat, [1, 99])
-        # ax.set_xlim(vmin, vmax)
+        
         ax.set_title(
             f"Features before/after FiLM — Block {block_idx}\n"
             f"before (μ={fb_flat.mean():.4f}, σ={fb_flat.std():.4f}), "
@@ -218,13 +216,23 @@ def case_A_per_block(
         #this block converts a single flat scalar index flat_idx into
         #  its 4D coordinates (sample n, channel c, height h, width w)
         #  within the tensor of shape (N, C, H, W)
-        for flat_idx in range(n_show): # flat_idx runs over a 1D indexing of all N*C*H*W scalars
-            n = flat_idx // (C * H * W)  # decode which sample this scalar belongs to (0..N-1)
-            rem = flat_idx %  (C * H * W)  # remaining offset inside that sample's (C*H*W) block
-            c = rem // (H * W)  # decode which channel within the sample (0..C-1)
-            rem = rem %  (H * W) # remaining offset inside that 
-            h = rem // W  # decode row index in the spatial grid (0..H-1)
-            w = rem %  W  # decode column index in the spatial grid (0..W-1)
+         # E,g For shape (N=1, C=2, H=2, W=2) there are 8 scalars total.
+        # Their flat indices and 4D indices are:
+        #   flat 0 -> (n=0,c=0,h=0,w=0)
+        #   flat 1 -> (0,0,0,1)
+        #   flat 2 -> (0,0,1,0)
+        #   flat 3 -> (0,0,1,1)
+        #   flat 4 -> (0,1,0,0)
+        #   flat 5 -> (0,1,0,1)
+        #   flat 6 -> (0,1,1,0)
+        #   flat 7 -> (0,1,1,1)
+        for flat_idx in range(n_show): # flat_idx runs over a 1D indexing of all N*C*H*W scalars, suppose flax_idx =6
+            n = flat_idx // (C * H * W)  # sample block # 6 // 8 = 0
+            rem = flat_idx %  (C * H * W)  # remaining # 6 % 8  = 6
+            c = rem // (H * W)  # channel  # 6 // 4 = 1
+            rem = rem %  (H * W) # remaining # 6 % 4  = 2
+            h = rem // W  # row  # 2 // 2 = 1
+            w = rem %  W  # column # 2 % 2  = 0
             before_val = float(fb[n, c, h, w])
             after_val  = float(fa[n, c, h, w])
             rows.append({
@@ -261,7 +269,7 @@ def case_A_per_block(
         }
 
         # Optional prints (keep or remove)
-        print(f"[Case A] Block {block_idx} global stats:")
+        print(f"[FiLM] Block {block_idx} global stats:")
         print(f"  L2 ||after - before|| = {l2:.4f}")
 
         # DataFrame view
@@ -291,7 +299,7 @@ def case_A_per_block(
 
 
 
-def case_A_per_channel(
+def analyze_film_per_channel(
     feat_before: dict,
     feat_after: dict,
     exp_name: str,
@@ -313,7 +321,7 @@ def case_A_per_channel(
         fa = feat_after[block_idx]   # (N, C, H, W)
         N, C, H, W = fb.shape
 
-        print(f"\n[Case A per-channel] Block {block_idx} — {exp_name}")
+        print(f"\n[FiLM per-channel] Block {block_idx} — {exp_name}")
         print(f"  feat_before shape: {fb.shape}")
         print(f"  feat_after  shape: {fa.shape}")
 
@@ -354,7 +362,7 @@ def case_A_per_channel(
             plt.show()
             # print(f"Saved {fname}")
 
-def case_A_per_sample(
+def analyze_film_per_sample(
     feat_before: dict,
     feat_after: dict,
     exp_name: str,
@@ -376,7 +384,7 @@ def case_A_per_sample(
         fa = feat_after[block_idx]   # (N, C, H, W)
         N, C, H, W = fb.shape
 
-        print(f"\n[Case A per-sample] Block {block_idx} — {exp_name}")
+        print(f"\n[FiLM per-sample] Block {block_idx} — {exp_name}")
         print(f"  feat_before shape: {fb.shape}")
         print(f"  feat_after  shape: {fa.shape}")
 

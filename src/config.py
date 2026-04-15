@@ -90,6 +90,26 @@ EXP_CONFIGS = {
         "loss": "mse",
         "batch_size": 32
     },
+     "exp13_cross_attn": {
+        **COMMON_CONFIG,
+        "name": "Exp13_SWIN_cross_attention",
+        "backbone": "swin_large_patch4_window12_384",
+        "img_size": 384,
+        "aug": "strong",
+        "head_type": "mlp",
+        "loss": "bce", # or mse
+        "batch_size": 12,
+    },
+    "exp14_gated_fusion": {
+        **COMMON_CONFIG,
+        "name": "exp14_gated_fusion",
+        "backbone": "efficientnet_b1",
+        "img_size": 256,
+        "aug": "lite",
+        "head_type": "mlp",
+        "loss": "mse",
+        "batch_size": 32
+    },
    
 
 }

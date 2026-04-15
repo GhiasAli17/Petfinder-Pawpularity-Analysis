@@ -14,7 +14,8 @@ from torch.utils.data import DataLoader
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
 from src.models import  build_vision_backbone, FeatureConcatFusionNet
 from src.film import FiLMExternalModulation, FiLMInternalModulation
-
+from src.cross_attention import  SWINCrossAttention
+from src.gate_fusion import EfficientNetGatedFusion
 
 
 def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target):
@@ -60,13 +61,20 @@ def validate_image(model, loader, device, scale_target):
     return rmse, val_preds, val_targets
 
 
-def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target):
+def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False):
     model.train()
+    if freeze_backbone:
+        for name, m in model.named_modules():
+            if name.startswith("backbone") and isinstance(m, torch.nn.BatchNorm2d):
+                m.eval()
+
     total_loss = 0.0
     n_samples = 0
+    
     for imgs, tabs, y in loader:
         imgs = imgs.to(device)
         tabs = tabs.to(device)
+
         y = y.to(device).float().unsqueeze(1)
         if scale_target:
             y = y / 100.0
@@ -75,7 +83,7 @@ def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, s
         with torch.autocast(device_type="cuda"):
             preds = model(imgs, tabs)
             loss = criterion(preds, y)
-        
+
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -102,6 +110,7 @@ def validate_fusion(model, loader, device, scale_target):
             val_targets.append(y.numpy())
     val_preds = np.concatenate(val_preds)
     val_targets = np.concatenate(val_targets)
+    
     rmse = root_mean_squared_error(val_targets, val_preds)
     return rmse, val_preds, val_targets
 
@@ -123,7 +132,7 @@ def extract_image_tab_features(loader, backbone, device):
     return img_feats, tab_feats, y
 
 
-from src.tab_encoder import load_glove_model, build_pets_metadata_glove
+
 def run_single_fold(
     fold,
     train_df,
@@ -143,6 +152,11 @@ def run_single_fold(
     apply_to_all_after=False,            # True: apply FiLM to all blocks >= idx, False: only at idx
     use_bn_affine=False,  
     freeze_backbone=False,
+     # cross-attention specific
+    cross_attn_num_heads=8,
+    cross_attn_query_mode="tab_queries_image",  # or "image_queries_tab"
+    cross_attn_head_hidden=256,
+    cross_attn_dropout=0.1,
 ):
     """
     Run ONE fold and return (best_rmse, val_preds, val_ids, val_targets).
@@ -166,7 +180,7 @@ def run_single_fold(
     if mode == "image":
         train_ds = ImageOnlyDataset(train_df, img_folder, train_tf)
         val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf)
-    elif mode == "fusion" or "film" in mode:
+    elif mode == "fusion" or "film" in mode or mode == "gated_effb1" or "cross" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)
         val_ds   = ImageTabDataset(val_df,   img_folder, tab_cols, val_tf)
@@ -214,7 +228,32 @@ def run_single_fold(
             freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1
             tab_encoder_capacity=tab_encoder_capacity, # "small" or "big" for tab encoder MLP
 
-        ).to(device)            
+        ).to(device) 
+    elif mode == "cross_attn_swin":
+        model = SWINCrossAttention(
+            backbone_name=backbone_name,
+            img_size=img_size,
+            tab_input_dim=len(tab_cols),
+            tab_hidden=64,
+            num_heads=cross_attn_num_heads,
+            head_hidden=cross_attn_head_hidden,
+            dropout=cross_attn_dropout,
+            pretrained=True,
+            freeze_backbone=freeze_backbone,
+            tab_encoder_capacity=tab_encoder_capacity,
+            query_mode=cross_attn_query_mode,
+        ).to(device)    
+    elif mode == "gated_effb1":
+        model = EfficientNetGatedFusion(
+            backbone_name=backbone_name,
+            img_size=img_size,
+            tab_input_dim=len(tab_cols),
+            tab_hidden=64,
+            head_hidden=256,
+            pretrained=True,
+            freeze_backbone=freeze_backbone,
+            tab_encoder_capacity=tab_encoder_capacity,
+        ).to(device)              
     else:  # fusion concat based without FiLM
          model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
@@ -227,9 +266,14 @@ def run_single_fold(
         ).to(device)
 
 
-
+    
+    # To Only train parameters that still require gradients
+    if freeze_backbone:
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+    else:
+        trainable_params = model.parameters()
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=lr, weight_decay=weight_decay
+        trainable_params, lr=lr, weight_decay=weight_decay
     )
 
     if loss_name == "bce":
@@ -260,7 +304,7 @@ def run_single_fold(
             )   
         else:
             avg_train_loss = train_one_epoch_fusion(
-                model, train_loader, optimizer, criterion, device, scaler, scale_target
+                model, train_loader, optimizer, criterion, device, scaler, scale_target, freeze_backbone
             )
             rmse, val_preds, val_targets = validate_fusion(
                 model, val_loader, device, scale_target
@@ -332,6 +376,5 @@ def run_single_fold(
     gc.collect()
 
     return best_rmse, np.array(val_preds), np.array(val_targets), val_ids
-
 
 

@@ -82,6 +82,7 @@ class FiLMInternalModulation(nn.Module):
         self.film_start_idx = film_start_idx  
         self.apply_to_all_after = apply_to_all_after
         self.use_bn_affine = use_bn_affine
+        self.freeze_backbone = freeze_backbone
 
         # to disable BN affine (gamma/beta) in blocks where FiLM is used.
         # iterating through that block and set affine false a
@@ -191,12 +192,28 @@ class FiLMInternalModulation(nn.Module):
         return x
 
     def forward(self, img: torch.Tensor, tab: torch.Tensor):
+        # if self.freeze_backbone:
+        #     for _, m in self.backbone.named_modules():
+        #         if isinstance(m, nn.BatchNorm2d):
+        #             m.eval()
+
         tab_feat = self.tab_enc(tab)
         x = self._forward_features_with_film(img, tab_feat)
         x = self.global_pool(x)
         out = self.head(x)
         return out
-
+    
+    # def train(self, mode: bool = True):
+    #     """
+    #     Override train() so that backbone BNs are ALWAYS kept in eval
+    #     when freeze_backbone=True, even after model.train() is called.
+    #     """
+    #     super().train(mode)  # sets everything to train mode normally
+    #     if self.freeze_backbone:
+    #         for m in self.backbone.modules():
+    #             if isinstance(m, torch.nn.BatchNorm2d):
+    #                 m.eval()  # immediately override back to eval
+    #     return self
     
     
 # ********* PART 2********************** 

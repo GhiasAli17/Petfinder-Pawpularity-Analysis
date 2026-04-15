@@ -27,7 +27,7 @@ class GatedFusion(nn.Module):
         # project tab to same dim as image so gate can mix them
         self.tab_proj = nn.Linear(tab_dim, img_dim)
 
-        # gate network: takes concat of both → scalar per dim
+        # gate network: takes concat(horizontally) of both -> scalar per dim
         self.gate_fc = nn.Linear(img_dim + img_dim, img_dim)
         # input:  concat(h_img, h_tab_proj) = (B, 2*img_dim)
         # output: gate vector                = (B, img_dim)
@@ -63,9 +63,9 @@ from src.tab_encoder import build_tab_encoder
 #Efficient
 class EfficientNetGatedFusion(nn.Module):
     """
-    EfficientNet backbone → global average pool → (B, D)
-    Tab encoder                                 → (B, tab_hidden)
-    GatedFusion                                 → (B, 1)
+    EfficientNet backbone -> global average pool -> (B, D)
+    Tab encoder                                 -> (B, tab_hidden)
+    GatedFusion                                 -> (B, 1)
     """
     def __init__(
         self,

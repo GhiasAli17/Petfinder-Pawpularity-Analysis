@@ -462,57 +462,6 @@ class FiLMExternalModulation(nn.Module):
     
 
 
-# class FiLMExternalSingle(nn.Module):
-#     def __init__(
-#         self,
-#         backbone_name,
-#         tab_input_dim,
-#         tab_hidden=64,
-#         head_hidden=256,
-#         pretrained_backbone=True,
-#         freeze_backbone=False,
-#         tab_encoder_capacity="small",   # 
-#         identity_init=False
-#     ):
-#         super().__init__()
-
-#         self.backbone = BackboneFeatureExtractor(
-#             backbone_name=backbone_name,
-#             pretrained=pretrained_backbone,
-#             freeze=freeze_backbone,
-#         )
-
-#         # SAME as internal
-#         self.tab_enc = build_tab_encoder(
-#             tab_input_dim,
-#             tab_hidden,
-#             tab_encoder_capacity
-#         )
-
-#         # SINGLE FiLM
-#         self.film = FiLM(
-#             cond_dim=tab_hidden,
-#             feature_dim=128,
-#             identity_init=identity_init
-#         )
-
-#         # self.classifier = FiLMClassifier(in_channels=128, out_dim=1)
-#         self.global_pool = nn.AdaptiveAvgPool2d(1)   # internal uses backbone's avg global_pool
-#         self.head = nn.Sequential(
-#             nn.Linear(128, head_hidden),
-#             nn.ReLU(),
-#             nn.Linear(head_hidden, 1),
-#         )
-
-#     def forward(self, img, tab):
-#         x = self.backbone(img)
-#         cond = self.tab_enc(tab)
-#         x = self.film(x, cond)
-#         # out = self.classifier(x)
-#         x = self.global_pool(x)   # (B, 128, 1, 1)
-#         x = x.flatten(1)          # (B, 128)
-#         out = self.head(x)         # (B, 1)
-#         return out    
 
 class FiLMExternalSingle(nn.Module):
     def __init__(

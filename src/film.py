@@ -11,27 +11,44 @@ class FiLM(nn.Module):
     Feature-wise Linear Modulation:
     y = gamma * x + beta, with gamma, beta predicted from a conditioning input Metadata.
     """
-    def __init__(self, cond_dim, feature_dim):
+    def __init__(self, cond_dim, feature_dim, identity_init=False):
         super().__init__()
 
+        self.identity_init = identity_init
         # Linear layer to predict per-channel gamma and beta from meta.
         # Input:  (B, cond_dim)
         # Output: (B, feature_dim=C)
         self.gamma_fc = nn.Linear(cond_dim, feature_dim)
         self.beta_fc  = nn.Linear(cond_dim, feature_dim)
 
+         # Identity‑preserving init: make outputs  0 at start, we add 0 as beta and multiply 1 as gamma in forward to start from identity
+        if identity_init:
+            nn.init.zeros_(self.gamma_fc.weight)
+            nn.init.zeros_(self.gamma_fc.bias)
+            nn.init.zeros_(self.beta_fc.weight)
+            nn.init.zeros_(self.beta_fc.bias)
+
+
+
+
+
     def forward(self, x, cond):
         """
         x: (B, C, H, W)
         cond: (B, tabular_dim)
         """
-        gamma = self.gamma_fc(cond)  # (B, C)
-        beta  = self.beta_fc(cond)   # (B, C)
+        gamma_delta = self.gamma_fc(cond)  # (B, C) initially all zeros
+        beta  = self.beta_fc(cond)   # (B, C) zeros at init
 
-        gamma = gamma.unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
+        gamma_delta = gamma_delta.unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
         beta  = beta.unsqueeze(-1).unsqueeze(-1)   # (B, C, 1, 1)
+        if self.identity_init:
+            gamma = 1.0 + gamma_delta  # Start from identity (gamma=1) and learn deltas
+        else:
+            gamma = gamma_delta    
 
-        return gamma * x + beta # (B, C, H, W) FiLM-modulated
+        
+        return gamma * x + beta
 
 
 ## ********* PART 1********************** ##
@@ -58,6 +75,7 @@ class FiLMInternalModulation(nn.Module):
         use_bn_affine: bool = True,  # whether to use gamma and beta from Batch Norm, or disable and rely on FiLM for affine transformation(gamma/beta)
         freeze_backbone: bool = False, # whether to freeze the backbone weights (except FiLM layers) or finetune them
         tab_encoder_capacity: str = "small", # "small" or "big" tab encoder MLP capacity/architecture
+        identity_init: bool = False
     ):
         super().__init__()
 
@@ -148,6 +166,7 @@ class FiLMInternalModulation(nn.Module):
                     self.film_layers[str(idx)] = FiLM(
                         cond_dim=self.film_cond_dim,
                         feature_dim=c,
+                        identity_init=identity_init
                     )
         # --------------------------------------------------------
 
@@ -182,7 +201,16 @@ class FiLMInternalModulation(nn.Module):
                 #  the FiLM module corresponding to this block index.
                 film = self._get_or_create_film(idx, x)
                 #  FiLM to modulate the current feature map x using tab_feat
+                x_before = x.clone()
                 x = film(x, tab_feat)
+                 # ---- DEBUG ----
+                # print(
+                #     f"  [FiLM block {idx}] "
+                #     f"x_before: mean={x_before.mean().item():.4f} std={x_before.std().item():.4f} "
+                #     f"nan={torch.isnan(x_before).any().item()} | "
+                #     f"x_after:  mean={x.mean().item():.4f} std={x.std().item():.4f} "
+                #     f"nan={torch.isnan(x).any().item()}"
+                # )
 
         x = self.backbone.conv_head(x)
         x = self.backbone.bn2(x)
@@ -203,6 +231,8 @@ class FiLMInternalModulation(nn.Module):
         out = self.head(x)
         return out
     
+    # we can frozen the BN running stats by overriding train function OR putting model to eval() inside each epoch 
+    # therefore this code is commented and eval() is called inside each epoch /train.py
     # def train(self, mode: bool = True):
     #     """
     #     Override train() so that backbone BNs are ALWAYS kept in eval
@@ -211,7 +241,7 @@ class FiLMInternalModulation(nn.Module):
     #     super().train(mode)  # sets everything to train mode normally
     #     if self.freeze_backbone:
     #         for m in self.backbone.modules():
-    #             if isinstance(m, torch.nn.BatchNorm2d):
+    #             if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
     #                 m.eval()  # immediately override back to eval
     #     return self
     
@@ -231,7 +261,7 @@ class FiLMedResBlock(nn.Module):
                                 Skip connection/Residual form
                              
     """
-    def __init__(self, channels=128, cond_dim=128):
+    def __init__(self, channels=128, cond_dim=128, identity_init=False):
         super().__init__()
 
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=1, padding=0, bias=False)
@@ -240,7 +270,7 @@ class FiLMedResBlock(nn.Module):
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(channels, affine=False)  # BN normalize only
 
-        self.film  = FiLM(cond_dim, channels)   # single FiLM per block
+        self.film  = FiLM(cond_dim, channels, identity_init)   # single FiLM per block
         self.relu2 = nn.ReLU(inplace=True)
 
     def forward(self, x, cond):
@@ -263,13 +293,13 @@ class FiLMedResStack(nn.Module):
     """
     Stack of FiLMedResBlockExact, all at Bx128x14x14.
     """
-    def __init__(self, num_blocks=4, channels=128, cond_dim=128):
+    def __init__(self, num_blocks=4, channels=128, cond_dim=128, identity_init=False):
         super().__init__()
         #  list of FiLMedResBlock modules.
         # Each block takes (x: (B, C, 14, 14), cond: (B, cond_dim))
         # and returns (B, C, 14, 14).
         self.blocks = nn.ModuleList([
-            FiLMedResBlock(channels=channels, cond_dim=cond_dim)
+            FiLMedResBlock(channels=channels, cond_dim=cond_dim, identity_init=identity_init)
             for _ in range(num_blocks)
         ])
 
@@ -387,6 +417,7 @@ class FiLMExternalModulation(nn.Module):
         pretrained_backbone: bool = True,
         freeze_backbone: bool = False,
         tab_encoder_capacity: str = "small",
+        identity_init:bool=False
         
     ):
         super().__init__()
@@ -415,6 +446,7 @@ class FiLMExternalModulation(nn.Module):
             num_blocks=num_film_blocks,
             channels=128,
             cond_dim=tab_hidden,
+            identity_init=identity_init
         )
 
         # classifier 
@@ -427,3 +459,149 @@ class FiLMExternalModulation(nn.Module):
         # final classifier head
         out = self.classifier(x)    # (B, 1)
         return out
+    
+
+
+# class FiLMExternalSingle(nn.Module):
+#     def __init__(
+#         self,
+#         backbone_name,
+#         tab_input_dim,
+#         tab_hidden=64,
+#         head_hidden=256,
+#         pretrained_backbone=True,
+#         freeze_backbone=False,
+#         tab_encoder_capacity="small",   # 
+#         identity_init=False
+#     ):
+#         super().__init__()
+
+#         self.backbone = BackboneFeatureExtractor(
+#             backbone_name=backbone_name,
+#             pretrained=pretrained_backbone,
+#             freeze=freeze_backbone,
+#         )
+
+#         # SAME as internal
+#         self.tab_enc = build_tab_encoder(
+#             tab_input_dim,
+#             tab_hidden,
+#             tab_encoder_capacity
+#         )
+
+#         # SINGLE FiLM
+#         self.film = FiLM(
+#             cond_dim=tab_hidden,
+#             feature_dim=128,
+#             identity_init=identity_init
+#         )
+
+#         # self.classifier = FiLMClassifier(in_channels=128, out_dim=1)
+#         self.global_pool = nn.AdaptiveAvgPool2d(1)   # internal uses backbone's avg global_pool
+#         self.head = nn.Sequential(
+#             nn.Linear(128, head_hidden),
+#             nn.ReLU(),
+#             nn.Linear(head_hidden, 1),
+#         )
+
+#     def forward(self, img, tab):
+#         x = self.backbone(img)
+#         cond = self.tab_enc(tab)
+#         x = self.film(x, cond)
+#         # out = self.classifier(x)
+#         x = self.global_pool(x)   # (B, 128, 1, 1)
+#         x = x.flatten(1)          # (B, 128)
+#         out = self.head(x)         # (B, 1)
+#         return out    
+
+class FiLMExternalSingle(nn.Module):
+    def __init__(
+        self,
+        backbone_name: str,
+        img_size: int,
+        tab_input_dim: int,
+        tab_hidden: int = 64,
+        head_hidden: int = 256,
+        pretrained_backbone: bool = True,
+        freeze_backbone: bool = False,
+        tab_encoder_capacity: str = "small",
+        identity_init: bool = False,
+    ):
+        super().__init__()
+
+        extra_kwargs = {}
+        if "swin" in backbone_name or "vit" in backbone_name:
+            extra_kwargs["img_size"] = img_size
+            extra_kwargs["dynamic_img_pad"] = True
+
+        # backbone loading as internal
+        self.backbone = timm.create_model(
+            backbone_name,
+            pretrained=pretrained_backbone,
+            num_classes=0,
+            **extra_kwargs,
+        )
+
+        if freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+
+        #  tab encoder as internal
+        self.tab_enc = build_tab_encoder(tab_input_dim, tab_hidden, tab_encoder_capacity)
+
+        # Discover channel dim after the last block via dummy forward
+        # 
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, img_size, img_size)
+            x = self.backbone.conv_stem(dummy)
+            x = self.backbone.bn1(x)
+            if getattr(self.backbone, "act1", None) is not None:
+                x = self.backbone.act1(x)
+            for block in self.backbone.blocks:
+                x = block(x)
+            c_last = x.shape[1]   # e.g. 320 for efficientnet_b1
+
+        # SINGLE FiLM on the last block's output channels
+        self.film = FiLM(
+            cond_dim=tab_hidden,
+            feature_dim=c_last,
+            identity_init=identity_init,
+        )
+
+        # global_pool and head 
+        self.num_features = self.backbone.num_features   # 1280 for efficientnet_b1
+        self.global_pool  = self.backbone.global_pool
+
+        self.head = nn.Sequential(
+            nn.Linear(self.num_features, head_hidden),
+            nn.ReLU(),
+            nn.Linear(head_hidden, 1),
+        )
+
+    def forward(self, img: torch.Tensor, tab: torch.Tensor):
+       
+        x = self.backbone.conv_stem(img)
+        x = self.backbone.bn1(x)
+        if getattr(self.backbone, "act1", None) is not None:
+            x = self.backbone.act1(x)
+
+        
+        for block in self.backbone.blocks:
+            x = block(x)                         # (B, 320, H', W')
+
+        #  single FiLM AFTER last block  
+        tab_feat = self.tab_enc(tab)
+        x = self.film(x, tab_feat)               # (B, 320, H', W')
+
+        
+        x = self.backbone.conv_head(x)           # (B, 1280, H', W')
+        x = self.backbone.bn2(x)
+        if getattr(self.backbone, "act2", None) is not None:
+            x = self.backbone.act2(x)
+
+        
+        x = self.global_pool(x)                  # (B, 1280)
+        out = self.head(x)                        # (B, 1)
+        return out
+    
+

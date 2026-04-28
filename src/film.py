@@ -554,3 +554,123 @@ class FiLMExternalSingle(nn.Module):
         return out
     
 
+# ********* PART 3 **********************
+# FiLMInternalResModulation: replace backbone blocks from film_start_idx onward
+# with FiLMedResBlock equivalents — same architecture as FiLMExternalModulation
+# but inserted *inside* the backbone (controlled ablation counterpart).
+
+class FiLMInternalResModulation(nn.Module):
+    """
+    Same as FiLMInternalModulation but replaces simple per-block FiLM(γx+β)
+    with a FiLMedResStack (conv1x1→ReLU→conv3x3→BN→FiLM→ReLU + skip).
+
+    Pipeline:
+      conv_stem → bn1 → act1
+      → prefix_blocks [0 : film_start_idx]
+      → FiLMedResStack                          ← replaces suffix backbone blocks
+      → projection conv (if channels changed)   ← bridges back to conv_head input dim
+      → conv_head → bn2 → act2
+      → global_pool → MLP head
+    """
+    def __init__(
+        self,
+        backbone_name: str,
+        img_size: int,
+        tab_input_dim: int,
+        tab_hidden: int = 128,
+        film_start_idx: int = 5,
+        num_film_blocks: int = 4,
+        head_hidden: int = 256,
+        pretrained: bool = True,
+        freeze_backbone: bool = False,
+        tab_encoder_capacity: str = "small",
+        identity_init: bool = False,
+    ):
+        super().__init__()
+
+        extra_kwargs = {}
+        if "swin" in backbone_name or "vit" in backbone_name:
+            extra_kwargs["img_size"] = img_size
+            extra_kwargs["dynamic_img_pad"] = True
+
+        backbone = timm.create_model(
+            backbone_name, pretrained=pretrained, num_classes=0, **extra_kwargs
+        )
+
+        self.conv_stem = backbone.conv_stem
+        self.bn1       = backbone.bn1
+        self.act1      = getattr(backbone, "act1", None)
+        self.prefix_blocks = nn.ModuleList(list(backbone.blocks)[:film_start_idx])
+        self.suffix_blocks = nn.ModuleList(list(backbone.blocks)[film_start_idx:])
+
+        if freeze_backbone:
+            for p in self.conv_stem.parameters():  p.requires_grad = False
+            for p in self.bn1.parameters():        p.requires_grad = False
+            for p in self.prefix_blocks.parameters(): p.requires_grad = False
+            # suffix_blocks are dropped so no need to freeze
+
+        # --- dummy forward to find c_at_split (input to FiLM stack) ---
+        with torch.no_grad():
+            x = self.conv_stem(torch.zeros(1, 3, img_size, img_size))
+            x = self.bn1(x)
+            if self.act1 is not None:
+                x = self.act1(x)
+            for block in self.prefix_blocks:
+                x = block(x)
+            c_at_split = x.shape[1]   # e.g. 32 when film_start_idx=0
+
+        # --- dummy forward through suffix to find c_needed_by_conv_head ---
+        with torch.no_grad():
+            x2 = x.clone()
+            for block in self.suffix_blocks:
+                x2 = block(x2)
+            c_before_head = x2.shape[1]  # e.g. 320 for EfficientNet-B1
+
+        self.tab_enc = build_tab_encoder(tab_input_dim, tab_hidden, tab_encoder_capacity)
+
+        self.film_stack = FiLMedResStack(
+            num_blocks=num_film_blocks,
+            channels=c_at_split,
+            cond_dim=tab_hidden,
+            identity_init=identity_init,
+        )
+
+        # Bridge FiLM stack output (c_at_split) back to what conv_head expects (c_before_head)
+        if c_at_split != c_before_head:
+            self.channel_proj = nn.Conv2d(c_at_split, c_before_head, kernel_size=1, bias=False)
+        else:
+            self.channel_proj = nn.Identity()
+
+        self.conv_head   = backbone.conv_head
+        self.bn2         = backbone.bn2
+        self.act2        = getattr(backbone, "act2", None)
+        self.global_pool = backbone.global_pool
+
+        self.head = nn.Sequential(
+            nn.Linear(backbone.num_features, head_hidden),
+            nn.ReLU(),
+            nn.Linear(head_hidden, 1),
+        )
+
+    def forward(self, img: torch.Tensor, tab: torch.Tensor):
+        x = self.conv_stem(img)
+        x = self.bn1(x)
+        if self.act1 is not None:
+            x = self.act1(x)
+
+        for block in self.prefix_blocks:
+            x = block(x)                     # (B, c_at_split, H', W')
+
+        cond = self.tab_enc(tab)
+        x = self.film_stack(x, cond)         # (B, c_at_split, H', W')
+
+        x = self.channel_proj(x)             # (B, c_before_head, H', W')  — no-op if same
+
+        x = self.conv_head(x)
+        x = self.bn2(x)
+        if self.act2 is not None:
+            x = self.act2(x)
+
+        x = self.global_pool(x)
+        out = self.head(x)
+        return out

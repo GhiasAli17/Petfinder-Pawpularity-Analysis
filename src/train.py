@@ -13,22 +13,21 @@ from torch.utils.data import DataLoader
 
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
 from src.models import  build_vision_backbone, FeatureConcatFusionNet
-from src.film import FiLMExternalModulation, FiLMInternalModulation, FiLMExternalSingle
+from src.film import FiLMExternalModulation, FiLMInternalModulation, FiLMExternalSingle, FiLMInternalResModulation
 from src.cross_attention import  SWINCrossAttention
 from src.gate_fusion import EfficientNetGatedFusion
 
 
-def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False, gradient_clip=False):
+
+def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False):
     model.train()
-    if freeze_backbone and BN_running_state_frozen:
-        for m in model.modules():
-            if isinstance(m, torch.nn.BatchNorm2d):
-                m.eval()
+    # if freeze_backbone and BN_running_state_frozen:
+    #     for m in model.modules():
+    #         if isinstance(m, torch.nn.BatchNorm2d):
+    #             m.eval()
 
     total_loss = 0.0
-    last_pred = None
-    last_loss = None
-    last_batch_idx = -1
+
 
     n_samples = 0
     for batch_idx, (imgs, y) in enumerate(loader):
@@ -38,31 +37,18 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
             y = y / 100.0
 
         optimizer.zero_grad()
-        # with torch.autocast(device_type="cuda"):
-        preds = model(imgs)
+        with torch.autocast(device_type="cuda"):
+            preds = model(imgs)
+            loss = criterion(preds, y)
 
-
-        # prediction clipping
-        loss = criterion(preds, y)
-
-        last_pred = preds.detach()
-        last_loss = loss.detach()
-        last_batch_idx = batch_idx
-        # scaler.scale(loss).backward()
-        # scaler.step(optimizer)
-        # scaler.update()
-        loss.backward()
-        if gradient_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
 
         total_loss += loss.item() * imgs.size(0)
         n_samples += imgs.size(0)
-    print(f"[TRAIN BATCH {last_batch_idx}] preds min={last_pred.min().item():.4f} "
-                  f"max={last_pred.max().item():.4f} "
-                  f"mean={last_pred.mean().item():.4f}"
-                  f"var={last_pred.var().item():.4f}")
-    print(f"[TRAIN BATCH {last_batch_idx}] loss={last_loss.item():.4f}")     
+ 
     return total_loss / n_samples
 
 
@@ -88,32 +74,29 @@ def validate_image(model, loader, device, scale_target):
 
 def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False):
     model.train()
-    if freeze_backbone and BN_running_state_frozen:
-        for name, m in model.named_modules():
-            if isinstance(m, torch.nn.BatchNorm2d):
-                m.eval()
+    # if freeze_backbone and BN_running_state_frozen:
+    #     for name, m in model.named_modules():
+    #         if isinstance(m, torch.nn.BatchNorm2d):
+    #             m.eval()
 
     total_loss = 0.0
     n_samples = 0
-    last_pred = None
-    last_loss = None
-    last_batch_idx = -1
+   
     
     for batch_idx, (imgs, tabs, y) in enumerate(loader):
         imgs = imgs.to(device)
         tabs = tabs.to(device)
-        last_batch_idx = batch_idx
+        
 
         y = y.to(device).float().unsqueeze(1)
         if scale_target:
             y = y / 100.0
 
         optimizer.zero_grad()
-        # with torch.autocast(device_type="cuda"):
-        preds = model(imgs, tabs)
-        loss = criterion(preds, y)
-        last_pred = preds.detach()
-        last_loss = loss.detach()
+        with torch.autocast(device_type="cuda"):
+            preds = model(imgs, tabs)
+            loss = criterion(preds, y)
+            
 
    
         scaler.scale(loss).backward()
@@ -122,11 +105,7 @@ def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, s
 
         total_loss += loss.item() * imgs.size(0)
         n_samples += imgs.size(0)
-    print(f"[TRAIN BATCH {last_batch_idx}] preds min={last_pred.min().item():.4f} "
-                  f"max={last_pred.max().item():.4f} "
-                  f"mean={last_pred.mean().item():.4f}"
-                  f"var={last_pred.var().item():.4f}")
-    print(f"[TRAIN BATCH {last_batch_idx}] loss={last_loss.item():.4f}")     
+  
     return total_loss / n_samples
 
 
@@ -197,6 +176,7 @@ def run_single_fold(
     cross_attn_query_mode="tab_queries_image",  # or "image_queries_tab"
     cross_attn_head_hidden=256,
     cross_attn_dropout=0.1,
+    num_cross_attn_blocks=1
 ):
     """
     Run ONE fold and return (best_rmse, val_preds, val_ids, val_targets).
@@ -268,6 +248,7 @@ def run_single_fold(
             pretrained_backbone=True,
             freeze_backbone=freeze_backbone,  # False => finetune EfficientNet-B1
             tab_encoder_capacity=tab_encoder_capacity, # "small" or "big" for tab encoder MLP
+            identity_init=identity_init
 
         ).to(device) 
     elif mode == "film_external_single":
@@ -280,7 +261,21 @@ def run_single_fold(
             freeze_backbone=freeze_backbone,
             tab_encoder_capacity=tab_encoder_capacity,  # 
             identity_init=identity_init
-        ).to(device)    
+        ).to(device)   
+    elif mode == "film_internal_res":
+        model = FiLMInternalResModulation(
+            backbone_name=backbone_name,
+            img_size=img_size,
+            tab_input_dim=len(tab_cols),
+            tab_hidden=64,
+            film_start_idx=film_start_idx,
+            num_film_blocks=4,
+            head_hidden=256,
+            pretrained=True,
+            freeze_backbone=freeze_backbone,
+            tab_encoder_capacity=tab_encoder_capacity,
+            identity_init=identity_init,
+        ).to(device)     
     elif mode == "cross_attn_swin":
         model = SWINCrossAttention(
             backbone_name=backbone_name,
@@ -294,6 +289,7 @@ def run_single_fold(
             freeze_backbone=freeze_backbone,
             tab_encoder_capacity=tab_encoder_capacity,
             query_mode=cross_attn_query_mode,
+            num_cross_attn_blocks = num_cross_attn_blocks
         ).to(device)    
     elif mode == "gated_effb1":
         model = EfficientNetGatedFusion(
@@ -305,7 +301,7 @@ def run_single_fold(
             pretrained=True,
             freeze_backbone=freeze_backbone,
             tab_encoder_capacity=tab_encoder_capacity,
-        ).to(device)              
+        ).to(device)                 
     else:  # fusion concat based without FiLM
          model = FeatureConcatFusionNet(
             backbone_name=backbone_name,
@@ -399,20 +395,7 @@ def run_single_fold(
                 print(f"Early stopping at epoch {epoch+1}")
                 break
     
-    if hasattr(model, "img_model"):          # FeatureConcatFusionNet, gated fusion, etc.
-        debug_bn_states(
-            model.img_model,
-            label=f"FOLD {fold} BN stats AFTER training | freeze_backbone={freeze_backbone}"
-        )
-    elif hasattr(model, "backbone"):         # FiLMInternalModulation, FiLMExternalModulation
-        debug_bn_states(
-            model.backbone,
-            label=f"FOLD {fold} BN stats AFTER training | freeze_backbone={freeze_backbone}"
-        )
-    # debug_bn_states(
-    #     model.img_model,
-    #     label=f"FOLD {fold} BN stats AFTER training | freeze_backbone={freeze_backbone}"
-    # )  
+  
     # logs per fold
     pd.DataFrame(epoch_logs).to_csv(
         os.path.join(out_dir, f"epoch_logs_fold{fold}.csv"), index=False

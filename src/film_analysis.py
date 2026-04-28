@@ -63,8 +63,12 @@ class FiLMAnalysisHooks:
         def fwd_hook(module, args, output):
             x, cond = args[0], args[1]  # x: (B, C, H, W), cond: (B, cond_dim)
             with torch.no_grad():
-                gamma = module.gamma_fc(cond).detach().cpu() # gamma: (B, C) predicted from cond
+                gamma_delta = module.gamma_fc(cond).detach().cpu() # gamma: (B, C) predicted from cond
                 beta  = module.beta_fc(cond).detach().cpu()
+                if module.identity_init:
+                    gamma = 1.0 + gamma_delta
+                else:
+                    gamma = gamma_delta
             self.gamma_stats[layer_idx].append(gamma) # store γ for this layer and batch
             self.beta_stats[layer_idx].append(beta)
             self.feat_after[layer_idx].append(output.detach().cpu()) # output: FiLM(x, cond) (B, C, H, W)

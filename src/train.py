@@ -27,8 +27,6 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
     #             m.eval()
 
     total_loss = 0.0
-
-
     n_samples = 0
     for batch_idx, (imgs, y) in enumerate(loader):
         imgs = imgs.to(device)
@@ -38,8 +36,12 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
 
         optimizer.zero_grad()
         with torch.autocast(device_type="cuda"):
+
             preds = model(imgs)
-            loss = criterion(preds, y)
+            if criterion is None:
+                loss = weighted_mse_loss(preds, y)
+            else:    
+                loss = criterion(preds, y)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -95,7 +97,10 @@ def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, s
         optimizer.zero_grad()
         with torch.autocast(device_type="cuda"):
             preds = model(imgs, tabs)
-            loss = criterion(preds, y)
+            if criterion is None:
+                loss = weighted_mse_loss(preds, y)
+            else:   
+                loss = criterion(preds, y)
             
 
    
@@ -147,7 +152,23 @@ def extract_image_tab_features(loader, backbone, device):
     y = np.concatenate(y_list)
     return img_feats, tab_feats, y
 
+def weighted_mse_loss(preds, targets, scale_target=False):
+    """
+    Higher penalty for rare bins (extremes).
+    targets are raw 0-100 scores.
+    """
+    if scale_target:
+        raise ValueError("weighted_mse_loss expects raw 0-100 targets, not scaled")
+    
+    weights = torch.ones_like(targets)
 
+    weights[targets <= 20]                        = 2.0   # not 5.0
+    weights[(targets > 40) & (targets <= 60)]     = 1.5   # not 2.0
+    weights[(targets > 60) & (targets <= 80)]     = 2.5   # not 4.0
+    weights[targets > 80]                         = 3.0 # not 8
+
+    loss = (preds - targets) ** 2
+    return (loss * weights).mean()
 
 def run_single_fold(
     fold,
@@ -327,9 +348,14 @@ def run_single_fold(
     if loss_name == "bce":
         criterion = torch.nn.BCEWithLogitsLoss()
         scale_target = True
-    else:
+    elif loss_name == "weighted_mse":
+        criterion =  None
+        scale_target = False    
+    elif loss_name == "mse":
         criterion = torch.nn.MSELoss()
         scale_target = False
+    else:
+        raise ValueError("incorrect loss passed")    
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs
@@ -349,7 +375,7 @@ def run_single_fold(
     for epoch in range(epochs):
         if mode == "image":
             avg_train_loss = train_one_epoch_image(
-                model, train_loader, optimizer, criterion, device, scaler, scale_target, freeze_backbone,BN_running_state_frozen,gradient_clip
+                model, train_loader, optimizer, criterion, device, scaler, scale_target, freeze_backbone,BN_running_state_frozen,
             )
             rmse, val_preds, val_targets = validate_image(
                 model, val_loader, device, scale_target, 
@@ -367,9 +393,14 @@ def run_single_fold(
         val_rmses.append(rmse)
 
 
+        # display_train = (
+        #     f"RMSE={np.sqrt(avg_train_loss):.4f}"
+        #     if loss_name == "mse"
+        #     else f"Loss={avg_train_loss:.4f}"
+        # )
         display_train = (
             f"RMSE={np.sqrt(avg_train_loss):.4f}"
-            if loss_name == "mse"
+            if loss_name in ("mse", "weighted_mse")
             else f"Loss={avg_train_loss:.4f}"
         )
         print(
@@ -403,7 +434,7 @@ def run_single_fold(
     hist_df = pd.DataFrame({
         "epoch": range(1, len(train_losses)+1),
         "train_loss": train_losses,
-        "train_rmse": np.sqrt(train_losses) if loss_name=="mse" else np.nan,
+        "train_rmse": np.sqrt(train_losses) if loss_name in ("mse", "weighted_mse") else np.nan,
         "val_rmse": val_rmses,
     })
     hist_df.to_csv(os.path.join(out_dir, f"history_fold{fold}.csv"),

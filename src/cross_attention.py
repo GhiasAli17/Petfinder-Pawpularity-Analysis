@@ -137,7 +137,8 @@ class SWINCrossAttention(nn.Module):
         freeze_backbone: bool = False,
         tab_encoder_capacity: str = "small",
         query_mode: str = "tab_queries_image",
-        num_cross_attn_blocks: int = 1,  # number of stacked cross-attention blocks
+        num_cross_attn_blocks: int = 1,  # number of stacked cross-attention blocks,
+        use_global_image_feature: bool = True
     ):
         super().__init__()
 
@@ -152,6 +153,8 @@ class SWINCrossAttention(nn.Module):
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+
+        self.use_global_image_feature = use_global_image_feature
 
         # SWIN num_features is the token dim D
         visual_dim = self.backbone.num_features  # e.g. 1536 for swin_large
@@ -191,7 +194,8 @@ class SWINCrossAttention(nn.Module):
             visual_tokens = visual_tokens.reshape(B, H * W, D)  # (B, N, D)
 
         # image-only summary (mean over tokens)
-        h_img = visual_tokens.mean(dim=1)          # (B, D)
+        if self.use_global_image_feature:
+            h_img = visual_tokens.mean(dim=1)          # (B, D)
 
         # tab embedding
         tab_feat = self.tab_enc(tab)               # (B, tab_hidden)
@@ -203,7 +207,9 @@ class SWINCrossAttention(nn.Module):
             fused = block(visual_tokens, fused)    # (B, D)
 
         # Residual mix: image-only + fused
-        fused = fused + h_img                      # (B, D)
+        if self.use_global_image_feature:
+            fused = fused + h_img                      # (B, D)
+        
         fused = F.layer_norm(fused, fused.shape[-1:])  # (B, D)
 
         out = self.head(fused)                     # (B, 1)

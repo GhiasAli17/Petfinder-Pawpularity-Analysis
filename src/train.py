@@ -174,7 +174,8 @@ def run_single_fold(
     cross_attn_query_mode="tab_queries_image",  # or "image_queries_tab"
     cross_attn_head_hidden=256,
     cross_attn_dropout=0.1,
-    num_cross_attn_blocks=1
+    num_cross_attn_blocks=1,
+    use_global_image_feature=True,
 ):
     """
     Run ONE fold and return (best_rmse, val_preds, val_ids, val_targets).
@@ -291,7 +292,8 @@ def run_single_fold(
             freeze_backbone=freeze_backbone,
             tab_encoder_capacity=tab_encoder_capacity,
             query_mode=cross_attn_query_mode,
-            num_cross_attn_blocks = num_cross_attn_blocks
+            num_cross_attn_blocks = num_cross_attn_blocks,
+            use_global_image_feature=use_global_image_feature,
         ).to(device)    
     elif mode == "gated_effb1":
         model = EfficientNetGatedFusion(

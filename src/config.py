@@ -7,6 +7,8 @@ COMMON_CONFIG = {
     "patience": 5,
     "lr": 2e-5,
     "weight_decay": 0.01,
+    "aux_tasks": [],
+    "aux_loss_weights": {},
 }
 
 EXP_CONFIGS = {
@@ -110,6 +112,19 @@ EXP_CONFIGS = {
         "loss": "mse",
         "batch_size": 32
     },
+    "exp15_aux_brisque": {
+    **COMMON_CONFIG,
+    "name": "Exp15_SwinT_384_Strong_AuxBRISQUE",
+    "backbone": "swin_large_patch4_window12_384",
+    "img_size": 384,
+    "aug": "strong",
+    "loss": "mse",
+    "batch_size": 12,
+    "aux_tasks": ["brisque"],
+    "aux_loss_weights": {"brisque": 0.1},
+    #"aux_tasks": ["brisque", "visibility_ratio"],
+    #"aux_loss_weights": {"brisque": 0.1, "visibility_ratio": 0.1},
+},
    
 
 }

@@ -12,14 +12,15 @@ from torch.utils.data import DataLoader
 
 
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
-from src.models import  build_vision_backbone, FeatureConcatFusionNet
+from src.models import  build_vision_backbone, FeatureConcatFusionNet, VisionAuxNet
 from src.film import FiLMExternalModulation, FiLMInternalModulation, FiLMExternalSingle, FiLMInternalResModulation
 from src.cross_attention import  SWINCrossAttention
 from src.gate_fusion import EfficientNetGatedFusion
 
 
 
-def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False):
+def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target,aux_loss_weights=None, freeze_backbone=False,BN_running_state_frozen=False):
+    aux_loss_weights = aux_loss_weights or {}
     model.train()
     # if freeze_backbone and BN_running_state_frozen:
     #     for m in model.modules():
@@ -27,8 +28,16 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
     #             m.eval()
 
     total_loss = 0.0
+    total_brisque_loss = 0.0      # track brisque aux loss separately
+    total_paw_loss = 0.0         # track main pawpularity loss separately
+    total_vis_loss = 0.0          # track visibility aux loss separately if there is
     n_samples = 0
-    for batch_idx, (imgs, y) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
+        if len(batch) == 2:
+            imgs, y = batch
+            aux = {}
+        else:
+            imgs, y, aux = batch
         imgs = imgs.to(device)
         y = y.to(device).float().unsqueeze(1)
         if scale_target:
@@ -38,7 +47,36 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
         with torch.autocast(device_type="cuda"):
 
             preds = model(imgs)  
-            loss = criterion(preds, y)
+            # loss = criterion(preds, y)
+
+            # baseline: model outputs a tensor
+            if not isinstance(preds, dict):
+                loss = criterion(preds, y)
+                total_paw_loss += loss.item() * imgs.size(0)
+            else:
+                # VisionAuxNet: preds is a dict
+                main_pred = preds["main"]
+                loss = criterion(main_pred, y)
+                total_paw_loss += loss.item() * imgs.size(0)
+
+
+                # Add auxiliary losses if available in this batch
+                if "brisque" in aux:
+                    brisque_t = aux["brisque"].to(device).float().unsqueeze(1)
+                    brisque_loss = torch.nn.functional.mse_loss(
+                        preds["brisque"], brisque_t
+                    )
+                    loss = loss + aux_loss_weights.get("brisque", 1.0) * brisque_loss
+                    total_brisque_loss += brisque_loss.item() * imgs.size(0)  # track total brisque loss
+
+                if "visibility_ratio" in aux:
+                    vis_t = aux["visibility_ratio"].to(device).float().unsqueeze(1)
+                    vis_loss = torch.nn.functional.mse_loss(
+                        preds["visibility_ratio"], vis_t
+                    )
+                    loss = loss + aux_loss_weights.get("visibility_ratio", 1.0) * vis_loss
+                    total_vis_loss += vis_loss.item() * imgs.size(0)  # track total visibility loss
+
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -47,29 +85,72 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
 
         total_loss += loss.item() * imgs.size(0)
         n_samples += imgs.size(0)
- 
-    return total_loss / n_samples
 
+    logs = {"loss": total_loss / n_samples, "loss_paw": total_paw_loss / n_samples}
+    if total_brisque_loss > 0:
+        logs["loss_brisque"] = total_brisque_loss / n_samples
+    if total_vis_loss > 0:
+        logs["loss_visibility_ratio"] = total_vis_loss / n_samples
+    return logs    
+ 
 
 def validate_image(model, loader, device, scale_target):
     model.eval()
     val_preds, val_targets = [], []
+    aux_pred_store   = {}  # {task: [arrays]}
+    aux_target_store = {}  # {task: [arrays]}
+
     with torch.no_grad():
-        for imgs, y in loader:
+        for batch in loader: 
+            if len(batch) == 2:# unpack batch — 2 items if no aux tasks, >2 if aux tasks present
+                imgs, y = batch
+                aux = {}  # no aux label
+            else:
+                imgs, y, aux = batch # aux is a dict: {"brisque": tensor, ...}
+
             imgs = imgs.to(device)
             preds = model(imgs)
-            if scale_target:
-                probs = torch.sigmoid(preds).cpu().numpy().squeeze()
-                out = probs * 100.0
+
+            # --- baseline model: output is a plain tensor ---
+            if not isinstance(preds, dict):
+                main_pred = preds
+            # --- VisionAuxNet: output is a dict {"main", "brisque", ...} ---
             else:
-                out = preds.cpu().numpy().squeeze()
+                main_pred = preds["main"]
+                # generic: collect any aux task present in both preds and aux
+                for task in preds:
+                    if task == "main":
+                        continue
+                    if task in aux:
+                        if task not in aux_pred_store:
+                            aux_pred_store[task]   = []
+                            aux_target_store[task] = []
+                        aux_pred_store[task].append(preds[task].cpu().numpy())
+                        t = aux[task]
+                        if not isinstance(t, np.ndarray):
+                            t = t.numpy()
+                        aux_target_store[task].append(t)
+
+            if scale_target:
+                out = torch.sigmoid(main_pred).cpu().numpy().squeeze() * 100.0
+            else:
+                out = main_pred.cpu().numpy().squeeze()
+
             val_preds.append(out)
             val_targets.append(y.numpy())
-    val_preds = np.concatenate(val_preds)
+
+    val_preds  = np.concatenate(val_preds)
     val_targets = np.concatenate(val_targets)
     rmse = root_mean_squared_error(val_targets, val_preds)
-    return rmse, val_preds, val_targets
 
+    # generic: compute MSE for every collected aux task
+    aux_metrics = {}
+    for task in aux_pred_store:
+        p = np.concatenate(aux_pred_store[task]).reshape(-1)
+        t = np.concatenate(aux_target_store[task]).reshape(-1)
+        aux_metrics[f"{task}_val_mse"] = float(np.mean((p - t) ** 2))
+
+    return rmse, val_preds, val_targets, aux_metrics
 
 def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False):
     model.train()
@@ -183,6 +264,8 @@ def run_single_fold(
     mode="image":  ImageOnlyDataset + build_vision_backbone + train_one_epoch_image / validate_image
     mode="fusion": ImageTabDataset  + FeatureConcatFusionNet      + train_one_epoch_fusion / validate_fusion
     """
+    aux_tasks = cfg.get("aux_tasks", [])
+    aux_loss_weights = cfg.get("aux_loss_weights", {})
     backbone_name = cfg["backbone"]
     img_size = cfg["img_size"]
     aug_type = cfg["aug"]
@@ -197,8 +280,8 @@ def run_single_fold(
     val_tf   = build_transforms(img_size, aug_type, train=False)
 
     if mode == "image":
-        train_ds = ImageOnlyDataset(train_df, img_folder, train_tf)
-        val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf)
+        train_ds = ImageOnlyDataset(train_df, img_folder, train_tf, aux_tasks=aux_tasks)
+        val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf, aux_tasks=aux_tasks)
     elif mode == "fusion" or "film" in mode or mode == "gated_effb1" or "cross" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)
@@ -223,9 +306,20 @@ def run_single_fold(
 
 
     if mode == "image": #it means only image model without metadata and without fusion
-        model = build_vision_backbone(
-            backbone_name, img_size, mode="regression"
-        ).to(device)
+        if len(aux_tasks) == 0:
+             model = build_vision_backbone(
+                backbone_name, img_size, mode="regression"
+            ).to(device)
+        else:
+            model = VisionAuxNet(
+                backbone_name=backbone_name,
+                img_size=img_size,
+                aux_tasks=aux_tasks,
+                pretrained=True,
+            ).to(device)
+        # model = build_vision_backbone(
+        #     backbone_name, img_size, mode="regression"
+        # ).to(device)
     elif mode == "film_fusion": # it shows FiLM modulating internal blocks of Image Backbone
         model = FiLMInternalModulation(
             backbone_name=backbone_name,        # e.g., "tf_efficientnet_b1"
@@ -345,46 +439,84 @@ def run_single_fold(
     best_rmse = float("inf")
     best_state = None
     epochs_no_improve = 0
-    train_losses, val_rmses = [], []
+    train_paw_losses , train_total_losses,val_rmses = [], [],[]
     epoch_logs = []
 
     for epoch in range(epochs):
-        if mode == "image":
-            avg_train_loss = train_one_epoch_image(
-                model, train_loader, optimizer, criterion, device, scaler, scale_target, freeze_backbone,BN_running_state_frozen,
+        aux_metrics = {}  # default, overwritten in image mode
+        train_out = {}     # default; overwritten in image mode per epoch
+        if mode == "image": 
+            train_out = train_one_epoch_image(
+                model, train_loader, optimizer, criterion, device, scaler, scale_target,
+                aux_loss_weights=aux_loss_weights,
+                freeze_backbone=freeze_backbone,
+                BN_running_state_frozen=BN_running_state_frozen,
             )
-            rmse, val_preds, val_targets = validate_image(
-                model, val_loader, device, scale_target, 
-            )   
+            avg_train_loss = train_out["loss"] if isinstance(train_out, dict) else train_out #total
+            avg_paw_loss   = train_out.get("loss_paw", avg_train_loss) #pawpularity only
+            rmse, val_preds, val_targets, aux_metrics = validate_image(
+                model, val_loader, device, scale_target,
+            )
         else:
             avg_train_loss = train_one_epoch_fusion(
                 model, train_loader, optimizer, criterion, device, scaler, scale_target, freeze_backbone,BN_running_state_frozen
             )
+            avg_paw_loss = avg_train_loss # fusion has no aux, total = paw
             rmse, val_preds, val_targets = validate_fusion(
                 model, val_loader, device, scale_target
             )
 
         scheduler.step()
-        train_losses.append(avg_train_loss)
+        train_total_losses.append(avg_train_loss)
+        if mode == "image" and isinstance(train_out, dict):
+            train_paw_losses.append(train_out.get("loss_paw", avg_train_loss))
+        else:
+            train_paw_losses.append(avg_train_loss)   # fusion mode: total = paw
         val_rmses.append(rmse)
 
-
-        display_train = (
-            f"RMSE={np.sqrt(avg_train_loss):.4f}"
+         
+        if len(aux_tasks) > 0:
+            display_train = (
+            f"PawRMSE={np.sqrt(avg_paw_loss):.4f} TotalLoss={avg_train_loss:.4f}"
             if loss_name == "mse"
-            else f"Loss={avg_train_loss:.4f}"
+            else f"PawLoss={avg_paw_loss:.4f} TotalLoss={avg_train_loss:.4f}"
         )
+        else:
+            display_train = (
+                f"RMSE={np.sqrt(avg_train_loss):.4f}"
+                if loss_name == "mse"
+                else f"Loss={avg_train_loss:.4f}"
+            )
+       
+
+        aux_str = ""
+        if mode == "image":
+            for k, v in aux_metrics.items():
+                aux_str += f" | {k}: {v:.4f}"
         print(
             f"Epoch {epoch+1}/{epochs} | Fold {fold} | "
             f"Train[{loss_name.upper()}]: {display_train} "
-            f"| ValRMSE: {rmse:.4f}"
+            f"| ValRMSE: {rmse:.4f}{aux_str}"
         )
-        epoch_logs.append({
+
+        log_row = {
             "fold": fold,
             "epoch": epoch + 1,
-            "train_loss": float(avg_train_loss),
+            "train_loss": float(avg_train_loss),#total
+            "train_paw_loss": float(avg_paw_loss),     # paw-only
             "val_rmse": float(rmse),
-        })
+        }
+
+        if mode == "image":
+            # generic: log all train aux losses
+            if isinstance(train_out, dict):
+                for k, v in train_out.items():
+                    if k not in ("loss", "loss_paw"):
+                        log_row[k] = float(v)
+            # generic: log all val aux metrics
+            for k, v in aux_metrics.items():
+                log_row[k] = float(v)
+        epoch_logs.append(log_row)
 
         if rmse < best_rmse:
             best_rmse = rmse
@@ -402,11 +534,20 @@ def run_single_fold(
     pd.DataFrame(epoch_logs).to_csv(
         os.path.join(out_dir, f"epoch_logs_fold{fold}.csv"), index=False
     )
+    # hist_df = pd.DataFrame({
+    #     "epoch": range(1, len(train_losses)+1),
+    #     "train_loss": train_losses,
+    #     "train_rmse": np.sqrt(train_losses) if loss_name in ("mse") else np.nan,
+    #     "val_rmse": val_rmses,
+    # })
     hist_df = pd.DataFrame({
-        "epoch": range(1, len(train_losses)+1),
-        "train_loss": train_losses,
-        "train_rmse": np.sqrt(train_losses) if loss_name in ("mse") else np.nan,
-        "val_rmse": val_rmses,
+        "epoch":           range(1, len(train_paw_losses) + 1),
+        "train_loss":      train_total_losses,    # total (paw + weighted aux)
+        "train_paw_loss":  train_paw_losses,      # paw-only
+        "train_rmse":      (np.sqrt(train_paw_losses)
+                            if loss_name == "mse"
+                            else [float("nan")] * len(train_paw_losses)),
+        "val_rmse":        val_rmses,
     })
     hist_df.to_csv(os.path.join(out_dir, f"history_fold{fold}.csv"),
                    index=False)
@@ -414,7 +555,10 @@ def run_single_fold(
     # best weights & preds
     model.load_state_dict(best_state)
     if mode == "image":
-        _, val_preds, val_targets = validate_image(
+        # _, val_preds, val_targets = validate_image(
+        #     model, val_loader, device, scale_target
+        # )
+        _, val_preds, val_targets, _ = validate_image(
             model, val_loader, device, scale_target
         )
     else:

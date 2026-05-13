@@ -11,7 +11,7 @@ from src.tab_encoder import build_tab_encoder
 
 
 
-
+#image only without metadata 
 def build_vision_backbone(name, img_size, mode):
     """
     img_size is used for Swin-type models that have a fixed patch embedding size. 
@@ -40,6 +40,41 @@ def build_vision_backbone(name, img_size, mode):
         raise ValueError(f"Unknown mode: {mode}")
     return model
 
+#image only without metadata but with aux heads, which can be one or more  aux heads
+class VisionAuxNet(nn.Module):
+    def __init__(self, backbone_name, img_size, aux_tasks=None, pretrained=True):
+        super().__init__()
+        self.aux_tasks = aux_tasks or []
+
+        extra_kwargs = {}
+        if "swin" in backbone_name or "vit" in backbone_name:
+            extra_kwargs["img_size"] = img_size
+            extra_kwargs["dynamic_img_pad"] = True
+
+        self.backbone = timm.create_model(
+            backbone_name,
+            pretrained=pretrained,
+            num_classes=0,
+            **extra_kwargs,
+        )
+        feat_dim = self.backbone.num_features
+
+        self.main_head = nn.Linear(feat_dim, 1)
+
+        self.aux_heads = nn.ModuleDict() # for multiple aux heads, e.g. brisque and visibility_ratio
+        if "brisque" in self.aux_tasks:
+            self.aux_heads["brisque"] = nn.Linear(feat_dim, 1)
+        if "visibility_ratio" in self.aux_tasks:
+            self.aux_heads["visibility_ratio"] = nn.Linear(feat_dim, 1)
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        out = {"main": self.main_head(feat)}
+        for task, head in self.aux_heads.items():
+            out[task] = head(feat)
+        return out
+    
+#Feature concat fusion of image backbone features and tabular data    
 class FeatureConcatFusionNet(nn.Module):
     """
     Vision backbone (features only) + tabular MLP encoder + fusion head.

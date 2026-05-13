@@ -6,6 +6,58 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 
+def plot_pseudo_label_analysis(df, pseudo_cols, target_col="Pawpularity", out_dir=None):
+    """
+    1. Distribution of each pseudo-label
+    2. Correlation matrix heatmap
+    3. Scatter of each pseudo-label vs target
+    """
+
+    n = len(pseudo_cols)
+    cols_all = [target_col] + pseudo_cols
+
+    # 1. Distributions
+    fig, axes = plt.subplots(1, n + 1, figsize=(5 * (n + 1), 4))
+    if n + 1 == 1:
+        axes = [axes]
+    for i, col in enumerate(cols_all):
+        ax = axes[i]
+        ax.hist(df[col], bins=30, edgecolor="white", alpha=0.85)
+        ax.axvline(df[col].mean(), color="red", linestyle="--",
+                   label=f"mean={df[col].mean():.1f}")
+        ax.set_title(col)
+        ax.set_xlabel("Value")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    plt.suptitle("Distributions", fontsize=12)
+    plt.tight_layout()
+
+    plt.show()
+
+      # 2. Correlation matrix — all numeric columns
+    all_numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    corr = df[all_numeric_cols].dropna().corr()
+    
+    fig, ax = plt.subplots(figsize=(len(all_numeric_cols) * 0.8 + 2, 
+                                    len(all_numeric_cols) * 0.8 + 2))
+    im = ax.imshow(corr.values, cmap="coolwarm", vmin=-1, vmax=1)
+    plt.colorbar(im, ax=ax)
+    ax.set_xticks(range(len(all_numeric_cols)))
+    ax.set_yticks(range(len(all_numeric_cols)))
+    ax.set_xticklabels(all_numeric_cols, rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(all_numeric_cols, fontsize=8)
+    for i in range(len(corr)):
+        for j in range(len(corr.columns)):
+            v = corr.values[i, j]
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                    fontsize=7, color="white" if abs(v) > 0.6 else "black")
+    ax.set_title("Correlation Matrix")
+    plt.tight_layout()
+
+    plt.show()
+
+    
+
 
 def plot_oof_true_pred_lines(oof_df,true_col="ytrue",pred_col="oof_pred", title_prefix=""):
     """

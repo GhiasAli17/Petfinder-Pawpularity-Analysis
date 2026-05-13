@@ -42,11 +42,11 @@ def build_transforms(img_size, aug_type, train=True):
 
 
 class ImageOnlyDataset(Dataset):
-    def __init__(self, df, img_folder, transform=None):
+    def __init__(self, df, img_folder, transform=None, aux_tasks=None):
         self.df = df.reset_index(drop=True)
         self.img_folder = img_folder
         self.transform = transform
-
+        self.aux_tasks = aux_tasks or []
     def __len__(self):
         return len(self.df)
 
@@ -58,7 +58,14 @@ class ImageOnlyDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         y = row["Pawpularity"]
-        return img, y
+        aux = {}
+        if "brisque" in self.aux_tasks:
+            aux["brisque"] = np.float32(row["BRISQUE"])
+        if "visibility_ratio" in self.aux_tasks:
+            aux["visibility_ratio"] = np.float32(row["visibility_ratio"])
+
+        return img, y, aux
+        # return img, y
 
 
 class ImageTabDataset(Dataset):

@@ -12,39 +12,100 @@ from src.tab_encoder import build_tab_encoder
 
 
 #image only without metadata 
-def build_vision_backbone(name, img_size, mode):
-    """
-    img_size is used for Swin-type models that have a fixed patch embedding size. 
-    """
-    extra_kwargs = {}
-    # flexible size for Swin.
-    if "swin" in name or "vit" in name:
-        extra_kwargs["img_size"] = img_size
-        extra_kwargs["dynamic_img_pad"] = True
+# def build_vision_backbone(name, img_size, mode, head_type="linear", head_hidden=256):
+#     """
+#     img_size is used for Swin-type models that have a fixed patch embedding size. 
+#     """
+#     extra_kwargs = {}
+#     # flexible size for Swin.
+#     if "swin" in name or "vit" in name:
+#         extra_kwargs["img_size"] = img_size
+#         extra_kwargs["dynamic_img_pad"] = True
 
-    if mode == "feature":
-        model = timm.create_model(
-            name,
-            pretrained=True,
-            num_classes=0,
-            **extra_kwargs,
-        )
-    elif mode == "regression":
-        model = timm.create_model(
-            name,
-            pretrained=True,
-            num_classes=1,
-            **extra_kwargs,
-        )
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
-    return model
+#     if mode == "feature":
+#         model = timm.create_model(
+#             name,
+#             pretrained=True,
+#             num_classes=0,
+#             **extra_kwargs,
+#         )
+#     elif mode == "regression":
+#         model = timm.create_model(
+#             name,
+#             pretrained=True,
+#             num_classes=1,
+#             **extra_kwargs,
+#         )
+#     else:
+#         raise ValueError(f"Unknown mode: {mode}")
+#     return model
+class VisionRegNet(nn.Module):
+    def __init__(
+        self,
+        backbone_name,
+        img_size,
+        head_type="linear",
+        head_hidden=256,
+        pretrained=True,
+    ):
+        super().__init__()
+
+        self.head_type = head_type
+
+        extra_kwargs = {}
+
+        if "swin" in backbone_name or "vit" in backbone_name:
+            extra_kwargs["img_size"] = img_size
+            extra_kwargs["dynamic_img_pad"] = True
+
+        # EXACT original timm behavior
+        if head_type == "linear":
+
+            self.model = timm.create_model(
+                backbone_name,
+                pretrained=pretrained,
+                num_classes=1,
+                **extra_kwargs,
+            )
+
+        # custom MLP head
+        elif head_type == "mlp":
+
+            self.backbone = timm.create_model(
+                backbone_name,
+                pretrained=pretrained,
+                num_classes=0,
+                **extra_kwargs,
+            )
+
+            feat_dim = self.backbone.num_features
+
+            self.head = nn.Sequential(
+                nn.Linear(feat_dim, head_hidden),
+                nn.ReLU(),
+                nn.Linear(head_hidden, 1),
+            )
+
+        else:
+            raise ValueError(f"Unknown head_type: {head_type}")
+
+    def forward(self, x):
+
+        # exact timm classifier behavior
+        if self.head_type == "linear":
+            return self.model(x)
+
+        # custom mlp head
+        feat = self.backbone(x)
+        return self.head(feat)
 
 #image only without metadata but with aux heads, which can be one or more  aux heads
 class VisionAuxNet(nn.Module):
-    def __init__(self, backbone_name, img_size, aux_tasks=None, pretrained=True):
+    def __init__(self, backbone_name, img_size, aux_tasks=None, pretrained=True, head_hidden=256, head_type="linear", use_saliency=False):
         super().__init__()
         self.aux_tasks = aux_tasks or []
+        self.head_type = head_type
+        self.use_saliency = use_saliency
 
         extra_kwargs = {}
         if "swin" in backbone_name or "vit" in backbone_name:
@@ -58,20 +119,42 @@ class VisionAuxNet(nn.Module):
             **extra_kwargs,
         )
         feat_dim = self.backbone.num_features
+        def make_head():
+            if head_type == "linear":
+                return nn.Linear(feat_dim, 1)
+            elif head_type == "mlp":
+                return nn.Sequential(
+                    nn.Linear(feat_dim, head_hidden),
+                    nn.ReLU(),
+                    nn.Linear(head_hidden, 1),
+                )
+            else:
+                raise ValueError(f"Unknown head_type: {head_type}")
 
-        self.main_head = nn.Linear(feat_dim, 1)
+        # self.main_head = nn.Linear(feat_dim, 1)
+        self.main_head = make_head()
 
         self.aux_heads = nn.ModuleDict() # for multiple aux heads, e.g. brisque and visibility_ratio
         if "brisque" in self.aux_tasks:
-            self.aux_heads["brisque"] = nn.Linear(feat_dim, 1)
+            # self.aux_heads["brisque"] = nn.Linear(feat_dim, 1)
+            self.aux_heads["brisque"] = make_head()
         if "visibility_ratio" in self.aux_tasks:
-            self.aux_heads["visibility_ratio"] = nn.Linear(feat_dim, 1)
+            # self.aux_heads["visibility_ratio"] = nn.Linear(feat_dim, 1)
+            self.aux_heads["visibility_ratio"] = make_head()
 
+        self._spatial_features = None
+        if self.use_saliency:
+            self.backbone.layers[-1].blocks[-1].register_forward_hook(
+                lambda m, inp, out: setattr(self, "_spatial_features", out)
+            )
     def forward(self, x):
         feat = self.backbone(x)
         out = {"main": self.main_head(feat)}
         for task, head in self.aux_heads.items():
             out[task] = head(feat)
+
+        if self.use_saliency and self._spatial_features is not None:
+            out["spatial"] = self._spatial_features    
         return out
     
 #Feature concat fusion of image backbone features and tabular data    

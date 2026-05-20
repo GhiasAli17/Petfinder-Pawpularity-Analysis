@@ -47,6 +47,11 @@ class ImageOnlyDataset(Dataset):
         self.img_folder = img_folder
         self.transform = transform
         self.aux_tasks = aux_tasks or []
+
+        # check if bbox columns exist for saliency loss
+        bbox_cols = ["bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"]
+        self.has_bbox = all(c in df.columns for c in bbox_cols)
+
     def __len__(self):
         return len(self.df)
 
@@ -63,6 +68,16 @@ class ImageOnlyDataset(Dataset):
             aux["brisque"] = np.float32(row["BRISQUE"])
         if "visibility_ratio" in self.aux_tasks:
             aux["visibility_ratio"] = np.float32(row["visibility_ratio"])
+
+        if self.has_bbox:
+            conf = float(row.get("yolo_conf", 0.0))
+            if conf > 0.3:
+                aux["pet_bbox"] = np.array([
+                    row["bbox_x1"], row["bbox_y1"],
+                    row["bbox_x2"], row["bbox_y2"]
+                ], dtype=np.float32)
+            else:
+                aux["pet_bbox"] = np.zeros(4, dtype=np.float32)    
 
         return img, y, aux
         # return img, y

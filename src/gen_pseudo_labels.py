@@ -1,4 +1,4 @@
-# tools/gen_pseudo_labels.py
+# src/gen_pseudo_labels.py
 # Generates pseudo-labels for aux-task training:
 #   - BRISQUE (image quality)
 #   - visibility_ratio (pet bbox area / image area)
@@ -17,7 +17,7 @@ def compute_brisque(df, img_folder):
     """Compute BRISQUE score for each image."""
 
     tf = transforms.Compose([
-        transforms.Resize((384, 384)),
+        # transforms.Resize((384, 384)),
         transforms.ToTensor(),  # [0,1]
     ])
 

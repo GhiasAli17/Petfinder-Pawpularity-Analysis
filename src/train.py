@@ -8,11 +8,11 @@ import copy
 import pandas as pd
 
 from torch.utils.data import DataLoader
-
+from src.losses import saliency_loss
 
 
 from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
-from src.models import  build_vision_backbone, FeatureConcatFusionNet, VisionAuxNet
+from src.models import  VisionRegNet, FeatureConcatFusionNet, VisionAuxNet
 from src.film import FiLMExternalModulation, FiLMInternalModulation, FiLMExternalSingle, FiLMInternalResModulation
 from src.cross_attention import  SWINCrossAttention
 from src.gate_fusion import EfficientNetGatedFusion
@@ -22,22 +22,23 @@ from src.gate_fusion import EfficientNetGatedFusion
 def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target,aux_loss_weights=None, freeze_backbone=False,BN_running_state_frozen=False):
     aux_loss_weights = aux_loss_weights or {}
     model.train()
-    # if freeze_backbone and BN_running_state_frozen:
-    #     for m in model.modules():
-    #         if isinstance(m, torch.nn.BatchNorm2d):
-    #             m.eval()
+
 
     total_loss = 0.0
     total_brisque_loss = 0.0      # track brisque aux loss separately
     total_paw_loss = 0.0         # track main pawpularity loss separately
     total_vis_loss = 0.0          # track visibility aux loss separately if there is
+    total_sal_loss    = 0.0
     n_samples = 0
     for batch_idx, batch in enumerate(loader):
+       
         if len(batch) == 2:
             imgs, y = batch
             aux = {}
         else:
             imgs, y, aux = batch
+        
+       
         imgs = imgs.to(device)
         y = y.to(device).float().unsqueeze(1)
         if scale_target:
@@ -48,6 +49,7 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
 
             preds = model(imgs)  
             # loss = criterion(preds, y)
+            
 
             # baseline: model outputs a tensor
             if not isinstance(preds, dict):
@@ -77,6 +79,16 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
                     loss = loss + aux_loss_weights.get("visibility_ratio", 1.0) * vis_loss
                     total_vis_loss += vis_loss.item() * imgs.size(0)  # track total visibility loss
 
+        sal_weight = aux_loss_weights.get("saliency", 0.0)
+        if sal_weight > 0.0 and "spatial" in preds and "pet_bbox" in aux:
+            sal = saliency_loss(
+                preds["spatial"].float(),
+                aux["pet_bbox"].to(device),
+                img_size=384,
+            )
+            loss = loss + sal_weight * sal
+            total_sal_loss += sal.item() * imgs.size(0)            
+
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -91,6 +103,8 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
         logs["loss_brisque"] = total_brisque_loss / n_samples
     if total_vis_loss > 0:
         logs["loss_visibility_ratio"] = total_vis_loss / n_samples
+    if total_sal_loss > 0:                                    
+        logs["loss_saliency"] = total_sal_loss / n_samples   
     return logs    
  
 
@@ -118,8 +132,9 @@ def validate_image(model, loader, device, scale_target):
             else:
                 main_pred = preds["main"]
                 # generic: collect any aux task present in both preds and aux
+                
                 for task in preds:
-                    if task == "main":
+                    if task in ("main", "spatial"):
                         continue
                     if task in aux:
                         if task not in aux_pred_store:
@@ -154,10 +169,6 @@ def validate_image(model, loader, device, scale_target):
 
 def train_one_epoch_fusion(model, loader, optimizer, criterion, device,scaler, scale_target, freeze_backbone=False,BN_running_state_frozen=False):
     model.train()
-    # if freeze_backbone and BN_running_state_frozen:
-    #     for name, m in model.named_modules():
-    #         if isinstance(m, torch.nn.BatchNorm2d):
-    #             m.eval()
 
     total_loss = 0.0
     n_samples = 0
@@ -305,21 +316,26 @@ def run_single_fold(
     )
 
 
-    if mode == "image": #it means only image model without metadata and without fusion
-        if len(aux_tasks) == 0:
-             model = build_vision_backbone(
-                backbone_name, img_size, mode="regression"
-            ).to(device)
+    if mode == "image": #image model without metadata and without fusion
+        use_saliency = cfg.get("use_saliency", False)
+        if len(aux_tasks) == 0 and not use_saliency:
+            model = VisionRegNet(
+            backbone_name=backbone_name,
+            img_size=img_size,
+            head_type=cfg.get("head_type", "linear"),
+            head_hidden=256,
+            pretrained=True,
+        ).to(device)
         else:
             model = VisionAuxNet(
                 backbone_name=backbone_name,
                 img_size=img_size,
                 aux_tasks=aux_tasks,
                 pretrained=True,
+                head_type=cfg.get("head_type", "linear"),
+                head_hidden=256,
+                use_saliency=cfg.get("use_saliency", False)
             ).to(device)
-        # model = build_vision_backbone(
-        #     backbone_name, img_size, mode="regression"
-        # ).to(device)
     elif mode == "film_fusion": # it shows FiLM modulating internal blocks of Image Backbone
         model = FiLMInternalModulation(
             backbone_name=backbone_name,        # e.g., "tf_efficientnet_b1"
@@ -475,12 +491,13 @@ def run_single_fold(
         val_rmses.append(rmse)
 
          
-        if len(aux_tasks) > 0:
+        use_saliency = cfg.get("use_saliency", False)
+        if len(aux_tasks) > 0 or use_saliency:
             display_train = (
-            f"PawRMSE={np.sqrt(avg_paw_loss):.4f} TotalLoss={avg_train_loss:.4f}"
-            if loss_name == "mse"
-            else f"PawLoss={avg_paw_loss:.4f} TotalLoss={avg_train_loss:.4f}"
-        )
+                f"PawRMSE={np.sqrt(avg_paw_loss):.4f} TotalLoss={avg_train_loss:.4f}"
+                if loss_name == "mse"
+                else f"PawLoss={avg_paw_loss:.4f} TotalLoss={avg_train_loss:.4f}"
+            )
         else:
             display_train = (
                 f"RMSE={np.sqrt(avg_train_loss):.4f}"
@@ -490,7 +507,17 @@ def run_single_fold(
        
 
         aux_str = ""
+        # if mode == "image":
+        #     for k, v in aux_metrics.items():
+        #         aux_str += f" | {k}: {v:.4f}"
+        aux_str = ""
         if mode == "image":
+            # training aux losses
+            if isinstance(train_out, dict):
+                for k, v in train_out.items():
+                    if k not in ("loss", "loss_paw"):
+                        aux_str += f" | train_{k}: {v:.4f}"
+            # validation aux metrics
             for k, v in aux_metrics.items():
                 aux_str += f" | {k}: {v:.4f}"
         print(
@@ -534,12 +561,7 @@ def run_single_fold(
     pd.DataFrame(epoch_logs).to_csv(
         os.path.join(out_dir, f"epoch_logs_fold{fold}.csv"), index=False
     )
-    # hist_df = pd.DataFrame({
-    #     "epoch": range(1, len(train_losses)+1),
-    #     "train_loss": train_losses,
-    #     "train_rmse": np.sqrt(train_losses) if loss_name in ("mse") else np.nan,
-    #     "val_rmse": val_rmses,
-    # })
+
     hist_df = pd.DataFrame({
         "epoch":           range(1, len(train_paw_losses) + 1),
         "train_loss":      train_total_losses,    # total (paw + weighted aux)
@@ -555,9 +577,6 @@ def run_single_fold(
     # best weights & preds
     model.load_state_dict(best_state)
     if mode == "image":
-        # _, val_preds, val_targets = validate_image(
-        #     model, val_loader, device, scale_target
-        # )
         _, val_preds, val_targets, _ = validate_image(
             model, val_loader, device, scale_target
         )
@@ -577,12 +596,4 @@ def run_single_fold(
     return best_rmse, np.array(val_preds), np.array(val_targets), val_ids
 
 
-def debug_bn_states(model, label=""):
-    for name, m in model.named_modules():
-        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
-            rm = m.running_mean.detach().cpu().numpy()
-            rv = m.running_var.detach().cpu().numpy()
-            print(f"{label} | {name:30s} | "
-                f"mean_range=[{rm.min():.6f}, {rm.max():.6f}] | "
-                f"var_range=[{rv.min():.6f}, {rv.max():.6f}] | "
-                f"mean_std={rm.std():.6f} | var_std={rv.std():.6f}")
+

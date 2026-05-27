@@ -42,11 +42,12 @@ def build_transforms(img_size, aug_type, train=True):
 
 
 class ImageOnlyDataset(Dataset):
-    def __init__(self, df, img_folder, transform=None, aux_tasks=None):
+    def __init__(self, df, img_folder, transform=None, aux_tasks=None, binary_aux_tasks=None):
         self.df = df.reset_index(drop=True)
         self.img_folder = img_folder
         self.transform = transform
         self.aux_tasks = aux_tasks or []
+        self.binary_aux_tasks = binary_aux_tasks or [] # binary aux tasks from metadata not pseudo-labels
 
         # check if bbox columns exist for saliency loss
         bbox_cols = ["bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"]
@@ -69,6 +70,11 @@ class ImageOnlyDataset(Dataset):
         if "visibility_ratio" in self.aux_tasks:
             aux["visibility_ratio"] = np.float32(row["visibility_ratio"])
 
+        for task in self.binary_aux_tasks:
+            if task in row.index:
+                aux[task] = np.float32(row[task])
+
+                
         if self.has_bbox:
             conf = float(row.get("yolo_conf", 0.0))
             if conf > 0.3:

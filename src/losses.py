@@ -2,8 +2,8 @@ import torch
 
 def saliency_loss(spatial_feat, pet_bboxes, img_size=384):
     """
-    Spatial attention regularization loss.
-    Uses last Swin block feature map as attention proxy.
+    Spatial feature activation regularization loss.
+    Uses last Swin block feature map as feature activation proxy.
     Penalizes activation outside the pet bbox.
 
     spatial_feat : (B, H, W, C) or (B, N, C)
@@ -20,13 +20,13 @@ def saliency_loss(spatial_feat, pet_bboxes, img_size=384):
     else:
         raise ValueError(f"Unexpected spatial_feat shape: {spatial_feat.shape}")
 
-    # soft attention map: mean over channels -> (B, H, W)
+    #  feature activation map: mean over channels -> (B, H, W)
     # average over channels -> (B, H, W), then normalize each sample to [0, 1]
     # this gives a spatial heatmap of where the backbone is "attending"
-    attn = spatial_feat.mean(dim=-1)
-    attn_flat = attn.flatten(1)
-    attn = attn - attn_flat.min(dim=1)[0].view(B, 1, 1)
-    attn = attn / (attn_flat.max(dim=1)[0].view(B, 1, 1) + 1e-9)
+    featureActMap = spatial_feat.mean(dim=-1)
+    featureActMap_flat = featureActMap.flatten(1)
+    featureActMap = featureActMap - featureActMap_flat.min(dim=1)[0].view(B, 1, 1)
+    featureActMap = featureActMap / (featureActMap_flat.max(dim=1)[0].view(B, 1, 1) + 1e-9)
 
     # scale = H / img_size
     scale_x = W / img_size
@@ -55,11 +55,11 @@ def saliency_loss(spatial_feat, pet_bboxes, img_size=384):
         mask = torch.zeros(H, W, device=spatial_feat.device)
         mask[fy1:fy2, fx1:fx2] = 1.0
 
-         # compute inside/outside attention fractions
-        # inside  = mean attention inside pet bbox  ( HIGH -> close to 1)
-        # outside = mean attention outside pet bbox ( LOW  -> close to 0)
-        inside  = (attn[b] * mask).sum() / (mask.sum() + 1e-9)
-        outside = (attn[b] * (1 - mask)).sum() / ((1 - mask).sum() + 1e-9)
+         # compute inside/outside feature activation fractions
+        # inside  = mean feature activation inside pet bbox  ( HIGH -> close to 1)
+        # outside = mean feature activation outside pet bbox ( LOW  -> close to 0)
+        inside  = (featureActMap[b] * mask).sum() / (mask.sum() + 1e-9)
+        outside = (featureActMap[b] * (1 - mask)).sum() / ((1 - mask).sum() + 1e-9)
         losses.append((1 - inside) + outside)
 
     # if no valid bboxes in this batch, return zero loss 

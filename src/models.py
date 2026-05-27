@@ -85,6 +85,15 @@ class VisionRegNet(nn.Module):
                 nn.ReLU(),
                 nn.Linear(head_hidden, 1),
             )
+           
+            # self.head  = nn.Sequential(
+            #         nn.Linear(feat_dim, 768),      
+            #         nn.ReLU(),
+            #         nn.Linear(768, 384),  
+            #         nn.ReLU(),
+            #         nn.Linear(384, head_hidden),
+            #         nn.ReLU(),
+            #         nn.Linear(head_hidden, 1))
 
         else:
             raise ValueError(f"Unknown head_type: {head_type}")
@@ -101,9 +110,11 @@ class VisionRegNet(nn.Module):
 
 #image only without metadata but with aux heads, which can be one or more  aux heads
 class VisionAuxNet(nn.Module):
-    def __init__(self, backbone_name, img_size, aux_tasks=None, pretrained=True, head_hidden=256, head_type="linear", use_saliency=False):
+    def __init__(self, backbone_name, img_size, aux_tasks=None, pretrained=True, head_hidden=256, 
+                 head_type="linear", use_saliency=False, binary_aux_tasks=None):
         super().__init__()
         self.aux_tasks = aux_tasks or []
+        self.binary_aux_tasks = binary_aux_tasks or []
         self.head_type = head_type
         self.use_saliency = use_saliency
 
@@ -128,6 +139,7 @@ class VisionAuxNet(nn.Module):
                     nn.ReLU(),
                     nn.Linear(head_hidden, 1),
                 )
+            
             else:
                 raise ValueError(f"Unknown head_type: {head_type}")
 
@@ -141,6 +153,10 @@ class VisionAuxNet(nn.Module):
         if "visibility_ratio" in self.aux_tasks:
             # self.aux_heads["visibility_ratio"] = nn.Linear(feat_dim, 1)
             self.aux_heads["visibility_ratio"] = make_head()
+
+        for task in self.binary_aux_tasks:
+            self.aux_heads[task] = make_head()  # same head structure for binary aux tasks
+
 
         self._spatial_features = None
         if self.use_saliency:

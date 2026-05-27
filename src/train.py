@@ -19,7 +19,12 @@ from src.gate_fusion import EfficientNetGatedFusion
 
 
 
-def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, scale_target,aux_loss_weights=None, freeze_backbone=False,BN_running_state_frozen=False):
+def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, 
+                          scale_target,aux_loss_weights=None, 
+                          binary_aux_tasks=None,
+                          freeze_backbone=False,BN_running_state_frozen=False):
+    
+    cfg_binary_aux_tasks = binary_aux_tasks or []
     aux_loss_weights = aux_loss_weights or {}
     model.train()
 
@@ -29,8 +34,11 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
     total_paw_loss = 0.0         # track main pawpularity loss separately
     total_vis_loss = 0.0          # track visibility aux loss separately if there is
     total_sal_loss    = 0.0
+    total_binary_losses = {t: 0.0 for t in cfg_binary_aux_tasks}
+
     n_samples = 0
     for batch_idx, batch in enumerate(loader):
+
        
         if len(batch) == 2:
             imgs, y = batch
@@ -78,6 +86,15 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
                     )
                     loss = loss + aux_loss_weights.get("visibility_ratio", 1.0) * vis_loss
                     total_vis_loss += vis_loss.item() * imgs.size(0)  # track total visibility loss
+                
+                for task in cfg_binary_aux_tasks:
+                    if task in aux and task in preds:
+                        label = aux[task].to(device).float().unsqueeze(1)
+                        bce   = torch.nn.functional.binary_cross_entropy_with_logits(
+                            preds[task], label
+                        )
+                        loss = loss + aux_loss_weights.get(task, 1.0) * bce
+                        total_binary_losses[task] += bce.item() * imgs.size(0)    
 
         sal_weight = aux_loss_weights.get("saliency", 0.0)
         if sal_weight > 0.0 and "spatial" in preds and "pet_bbox" in aux:
@@ -105,6 +122,10 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, sc
         logs["loss_visibility_ratio"] = total_vis_loss / n_samples
     if total_sal_loss > 0:                                    
         logs["loss_saliency"] = total_sal_loss / n_samples   
+
+    for task, total in total_binary_losses.items():
+        if total > 0:
+            logs[f"loss_{task}"] = total / n_samples    
     return logs    
  
 
@@ -161,9 +182,24 @@ def validate_image(model, loader, device, scale_target):
     # generic: compute MSE for every collected aux task
     aux_metrics = {}
     for task in aux_pred_store:
+     
         p = np.concatenate(aux_pred_store[task]).reshape(-1)
         t = np.concatenate(aux_target_store[task]).reshape(-1)
-        aux_metrics[f"{task}_val_mse"] = float(np.mean((p - t) ** 2))
+
+        # check if this is a binary task (all targets are 0 or 1)
+        is_binary = np.all((t == 0) | (t == 1))
+        if is_binary:
+        # for binary tasks: report accuracy only, not MSE
+            # p_binary = (1 / (1 + np.exp(-p))) > 0.5   # sigmoid threshold
+            # aux_metrics[f"{task}_val_acc"] = float(np.mean(p_binary == t))
+            p_clipped = np.clip(1 / (1 + np.exp(-p)), 1e-7, 1 - 1e-7)
+            val_bce = -np.mean(t * np.log(p_clipped) + (1 - t) * np.log(1 - p_clipped))
+            aux_metrics[f"{task}_val_bce"] = float(val_bce)
+        else:
+            # for regression tasks: report MSE only
+            aux_metrics[f"{task}_val_mse"] = float(np.mean((p - t) ** 2))
+
+
 
     return rmse, val_preds, val_targets, aux_metrics
 
@@ -276,6 +312,7 @@ def run_single_fold(
     mode="fusion": ImageTabDataset  + FeatureConcatFusionNet      + train_one_epoch_fusion / validate_fusion
     """
     aux_tasks = cfg.get("aux_tasks", [])
+    binary_aux_tasks = cfg.get("binary_aux_tasks", [])
     aux_loss_weights = cfg.get("aux_loss_weights", {})
     backbone_name = cfg["backbone"]
     img_size = cfg["img_size"]
@@ -291,8 +328,8 @@ def run_single_fold(
     val_tf   = build_transforms(img_size, aug_type, train=False)
 
     if mode == "image":
-        train_ds = ImageOnlyDataset(train_df, img_folder, train_tf, aux_tasks=aux_tasks)
-        val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf, aux_tasks=aux_tasks)
+        train_ds = ImageOnlyDataset(train_df, img_folder, train_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
+        val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
     elif mode == "fusion" or "film" in mode or mode == "gated_effb1" or "cross" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)
@@ -318,7 +355,7 @@ def run_single_fold(
 
     if mode == "image": #image model without metadata and without fusion
         use_saliency = cfg.get("use_saliency", False)
-        if len(aux_tasks) == 0 and not use_saliency:
+        if len(aux_tasks) == 0 and not use_saliency and len(binary_aux_tasks) == 0:
             model = VisionRegNet(
             backbone_name=backbone_name,
             img_size=img_size,
@@ -331,6 +368,7 @@ def run_single_fold(
                 backbone_name=backbone_name,
                 img_size=img_size,
                 aux_tasks=aux_tasks,
+                binary_aux_tasks=binary_aux_tasks,
                 pretrained=True,
                 head_type=cfg.get("head_type", "linear"),
                 head_hidden=256,
@@ -467,6 +505,7 @@ def run_single_fold(
                 aux_loss_weights=aux_loss_weights,
                 freeze_backbone=freeze_backbone,
                 BN_running_state_frozen=BN_running_state_frozen,
+                binary_aux_tasks=binary_aux_tasks
             )
             avg_train_loss = train_out["loss"] if isinstance(train_out, dict) else train_out #total
             avg_paw_loss   = train_out.get("loss_paw", avg_train_loss) #pawpularity only
@@ -492,7 +531,7 @@ def run_single_fold(
 
          
         use_saliency = cfg.get("use_saliency", False)
-        if len(aux_tasks) > 0 or use_saliency:
+        if len(aux_tasks) > 0 or use_saliency or len(binary_aux_tasks) > 0:
             display_train = (
                 f"PawRMSE={np.sqrt(avg_paw_loss):.4f} TotalLoss={avg_train_loss:.4f}"
                 if loss_name == "mse"

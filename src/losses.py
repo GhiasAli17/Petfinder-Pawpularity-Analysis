@@ -70,3 +70,19 @@ def saliency_loss(spatial_feat, pet_bboxes, img_size=384):
         return spatial_feat.sum() * 0.0
     # average loss over all valid images in the batch
     return torch.stack(losses).mean()
+
+
+def focal_mse_loss(pred, target, gamma=1.0):
+    """
+    Focal MSE loss for Pawpularity regression.
+    Gives more weight to hard samples (large prediction errors).
+    gamma=0 -> standard MSE
+    gamma=1 -> error-weighted MSE (default)
+    gamma=2 -> strongly emphasizes hard samples
+    
+    pred   : (B, 1) predicted Pawpularity
+    target : (B, 1) true Pawpularity
+    """
+    error  = (pred - target) ** 2
+    weight = torch.abs(pred.detach() - target) ** gamma
+    return (weight * error).mean()

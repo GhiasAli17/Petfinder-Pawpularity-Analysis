@@ -1,7 +1,8 @@
 # src/train_utils.py
 import numpy as np
 import torch
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import root_mean_squared_error, f1_score, precision_score, recall_score
+
 import os, gc
 import copy
 
@@ -35,6 +36,8 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
     total_vis_loss = 0.0          # track visibility aux loss separately if there is
     total_sal_loss    = 0.0
     total_binary_losses = {t: 0.0 for t in cfg_binary_aux_tasks}
+    total_binary_correct = {t: 0.0 for t in cfg_binary_aux_tasks}  # 
+    total_binary_counts  = {t: 0   for t in cfg_binary_aux_tasks}  # 
 
     n_samples = 0
     for batch_idx, batch in enumerate(loader):
@@ -96,6 +99,13 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
                         loss = loss + aux_loss_weights.get(task, 1.0) * bce
                         total_binary_losses[task] += bce.item() * imgs.size(0)    
 
+                        #  track train accuracy for metadata 
+                        with torch.no_grad():
+                            pred_bin = (torch.sigmoid(preds[task]) > 0.5).float()
+                            total_binary_correct[task] += (pred_bin == label).sum().item()
+                            total_binary_counts[task]  += label.size(0)
+                        
+
         sal_weight = aux_loss_weights.get("saliency", 0.0)
         if sal_weight > 0.0 and "spatial" in preds and "pet_bbox" in aux:
             sal = saliency_loss(
@@ -126,6 +136,13 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
     for task, total in total_binary_losses.items():
         if total > 0:
             logs[f"loss_{task}"] = total / n_samples    
+    # train accuracy per binary task 
+    for task in cfg_binary_aux_tasks:
+        if total_binary_counts[task] > 0:
+            logs[f"train_acc_{task}"] = (
+                total_binary_correct[task] / total_binary_counts[task]
+            )
+    # 
     return logs    
  
 
@@ -186,7 +203,7 @@ def validate_image(model, loader, device, scale_target):
         p = np.concatenate(aux_pred_store[task]).reshape(-1)
         t = np.concatenate(aux_target_store[task]).reshape(-1)
 
-        # check if this is a binary task (all targets are 0 or 1)
+        # to check if this is a binary task (all targets are 0 or 1)
         is_binary = np.all((t == 0) | (t == 1))
         if is_binary:
         # for binary tasks: report accuracy only, not MSE
@@ -195,6 +212,17 @@ def validate_image(model, loader, device, scale_target):
             p_clipped = np.clip(1 / (1 + np.exp(-p)), 1e-7, 1 - 1e-7)
             val_bce = -np.mean(t * np.log(p_clipped) + (1 - t) * np.log(1 - p_clipped))
             aux_metrics[f"{task}_val_bce"] = float(val_bce)
+
+            #  val accuracy 
+            p_binary = (1 / (1 + np.exp(-p))) > 0.5
+            aux_metrics[f"{task}_val_acc"] = float(np.mean(p_binary == t))
+            
+
+            # to track F1, precision, recall for binary aux tasks
+            
+            aux_metrics[f"{task}_val_f1"]   = float(f1_score(t, p_binary, zero_division=0))
+            aux_metrics[f"{task}_val_prec"] = float(precision_score(t, p_binary, zero_division=0))
+            aux_metrics[f"{task}_val_rec"]  = float(recall_score(t, p_binary, zero_division=0))
         else:
             # for regression tasks: report MSE only
             aux_metrics[f"{task}_val_mse"] = float(np.mean((p - t) ** 2))
@@ -482,6 +510,11 @@ def run_single_fold(
     elif loss_name == "mse":
         criterion = torch.nn.MSELoss()
         scale_target = False
+    elif loss_name == "focal_mse":
+        from src.losses import focal_mse_loss
+        focal_gamma = cfg.get("focal_gamma", 1.0)
+        criterion = lambda pred, target: focal_mse_loss(pred, target, gamma=focal_gamma)
+        scale_target = False    
     else:
         raise ValueError("incorrect loss passed")    
 

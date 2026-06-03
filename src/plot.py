@@ -509,3 +509,177 @@ def compare_oof_by_bins(
 
     return df, rmse_a_all, rmse_b_all, oof_gap
 
+
+# src/plot.py
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def plot_metadata_aux_curves(out_dir, binary_aux_tasks, n_folds=5):
+    all_logs = []
+    for fold in range(1, n_folds + 1):
+        lp = os.path.join(out_dir, f"epoch_logs_fold{fold}.csv")
+        if os.path.exists(lp):
+            all_logs.append(pd.read_csv(lp))
+
+    if not all_logs:
+        print(f"No epoch logs found in: {out_dir}")
+        return
+
+    logs_df = pd.concat(all_logs).reset_index(drop=True)
+
+    for aux_task in binary_aux_tasks:
+        bce_col = f"{aux_task}_val_bce"
+        acc_col = f"{aux_task}_val_acc"
+        f1_col  = f"{aux_task}_val_f1"   
+
+        if bce_col not in logs_df.columns:
+            print(f"Column '{bce_col}' not found, skipping {aux_task}")
+            continue
+
+        
+        fig, axes = plt.subplots(1, 4, figsize=(22, 4))
+
+        for fold_i in range(1, n_folds + 1):
+            fold_log = logs_df[logs_df["fold"] == fold_i]
+            if fold_log.empty:
+                continue
+
+            axes[0].plot(fold_log["epoch"], fold_log["val_rmse"],
+                         label=f"fold {fold_i}", alpha=0.85)
+            axes[1].plot(fold_log["epoch"], fold_log[bce_col],
+                         label=f"fold {fold_i}", alpha=0.85)
+            if acc_col in fold_log.columns:
+                axes[2].plot(fold_log["epoch"], fold_log[acc_col] * 100,
+                             label=f"fold {fold_i}", alpha=0.85)
+
+            
+            if f1_col in fold_log.columns:
+                axes[3].plot(fold_log["epoch"], fold_log[f1_col],
+                             label=f"fold {fold_i}", alpha=0.85)
+           
+
+        axes[0].set_title("Main task — val RMSE (Pawpularity) per epoch")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("RMSE")
+        axes[0].legend(fontsize=8)
+        axes[0].grid(alpha=0.3)
+
+        axes[1].set_title(f"Aux head — val BCE ({aux_task}) per epoch")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("BCE Loss")
+        axes[1].legend(fontsize=8)
+        axes[1].grid(alpha=0.3)
+
+        axes[2].set_title(f"Aux head — val Accuracy ({aux_task}) per epoch")
+        axes[2].set_xlabel("Epoch")
+        axes[2].set_ylabel("Accuracy (%)")
+        if acc_col in logs_df.columns:
+            min_acc = (logs_df[acc_col].min() - 0.02) * 100
+            max_acc = (logs_df[acc_col].max() + 0.02) * 100
+            axes[2].set_ylim(min_acc, max_acc)
+        axes[2].legend(fontsize=8)
+        axes[2].grid(alpha=0.3)
+
+        
+        axes[3].set_title(f"Aux head — val F1 ({aux_task}) per epoch")
+        axes[3].set_xlabel("Epoch")
+        axes[3].set_ylabel("F1 Score")
+        if f1_col in logs_df.columns:
+            min_f1 = max(0, logs_df[f1_col].min() - 0.05)
+            max_f1 = min(1, logs_df[f1_col].max() + 0.05)
+            axes[3].set_ylim(min_f1, max_f1)
+        axes[3].legend(fontsize=8)
+        axes[3].grid(alpha=0.3)
+
+        if f1_col not in logs_df.columns:
+            axes[3].text(0.5, 0.5, "Not saved\n(retrain with updated code)",
+                         ha="center", va="center",
+                         transform=axes[3].transAxes,
+                         fontsize=10, color="red")
+        
+
+        plt.suptitle(f"Aux-task learning curves — {aux_task}", fontsize=11)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"learning_curves_{aux_task}.png"),
+                    dpi=150, bbox_inches="tight")
+        plt.show()
+# def plot_metadata_aux_curves(out_dir, binary_aux_tasks, n_folds=5):
+#     """
+#     Plot per-epoch learning curves for metadata binary aux task experiments.
+#     Shows val RMSE, val BCE, and val accuracy for each aux task.
+
+#     Parameters
+#     ----------
+#     out_dir          : path to experiment output folder
+#     binary_aux_tasks : list of aux task names e.g. ["Face"] or ["Eyes", "Face"]
+#     n_folds          : number of folds (default 5)
+#     """
+#     # load all fold logs
+#     all_logs = []
+#     for fold in range(1, n_folds + 1):
+#         lp = os.path.join(out_dir, f"epoch_logs_fold{fold}.csv")
+#         if os.path.exists(lp):
+#             all_logs.append(pd.read_csv(lp))
+
+#     if not all_logs:
+#         print(f"No epoch logs found in: {out_dir}")
+#         return
+
+#     logs_df = pd.concat(all_logs).reset_index(drop=True)
+
+#     # plot one figure per aux task
+#     for aux_task in binary_aux_tasks:
+#         bce_col = f"{aux_task}_val_bce"
+#         acc_col = f"{aux_task}_val_acc"
+
+#         if bce_col not in logs_df.columns:
+#             print(f"Column '{bce_col}' not found, skipping {aux_task}")
+#             continue
+
+#         fig, axes = plt.subplots(1, 3, figsize=(17, 4))
+
+#         for fold_i in range(1, n_folds + 1):
+#             fold_log = logs_df[logs_df["fold"] == fold_i]
+#             if fold_log.empty:
+#                 continue
+
+#             axes[0].plot(fold_log["epoch"], fold_log["val_rmse"],
+#                          label=f"fold {fold_i}", alpha=0.85)
+#             axes[1].plot(fold_log["epoch"], fold_log[bce_col],
+#                          label=f"fold {fold_i}", alpha=0.85)
+#             if acc_col in fold_log.columns:
+#                 axes[2].plot(fold_log["epoch"], fold_log[acc_col] * 100,
+#                              label=f"fold {fold_i}", alpha=0.85)
+
+#         axes[0].set_title("Main task — val RMSE (Pawpularity) per epoch")
+#         axes[0].set_xlabel("Epoch")
+#         axes[0].set_ylabel("RMSE")
+#         axes[0].legend(fontsize=8)
+#         axes[0].grid(alpha=0.3)
+
+#         axes[1].set_title(f"Aux head — val BCE ({aux_task}) per epoch")
+#         axes[1].set_xlabel("Epoch")
+#         axes[1].set_ylabel("BCE Loss")
+#         axes[1].legend(fontsize=8)
+#         axes[1].grid(alpha=0.3)
+
+#         axes[2].set_title(f"Aux head — val Accuracy ({aux_task}) per epoch")
+#         axes[2].set_xlabel("Epoch")
+#         axes[2].set_ylabel("Accuracy (%)")
+#         if acc_col in logs_df.columns:
+#             min_acc = (logs_df[acc_col].min() - 0.02) * 100
+#             max_acc = (logs_df[acc_col].max() + 0.02) * 100
+#             axes[2].set_ylim(min_acc, max_acc)
+#         axes[2].legend(fontsize=8)
+#         axes[2].grid(alpha=0.3)
+
+#         plt.suptitle(f"Aux-task learning curves — {aux_task}", fontsize=11)
+#         plt.tight_layout()
+#         plt.savefig(os.path.join(out_dir, f"learning_curves_{aux_task}.png"),
+#                     dpi=150, bbox_inches="tight")
+#         plt.show()
+
+

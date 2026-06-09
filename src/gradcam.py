@@ -347,7 +347,27 @@ def compute_cam_mask_overlap(
     union = float(np.clip(cam_bin + bbox_bin, 0, 1).sum())
     return intersection / union if union > 0 else 0.0
 
+def make_face_proxy_bbox(
+    bbox,
+    img_w: int,
+    img_h: int,
+    x_frac=(0.25, 0.75),
+    y_frac=(0.0, 0.45),
+):
+    """
+    Heuristic face-region proxy inside the YOLO pet bbox.
 
+    Assumes the pet face is roughly in the upper-center of the YOLO pet box.
+    """
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    bw = max(0.0, x2 - x1)
+    bh = max(0.0, y2 - y1)
+
+    fx1 = int(max(0, min(img_w, x1 + x_frac[0] * bw)))
+    fx2 = int(max(0, min(img_w, x1 + x_frac[1] * bw)))
+    fy1 = int(max(0, min(img_h, y1 + y_frac[0] * bh)))
+    fy2 = int(max(0, min(img_h, y1 + y_frac[1] * bh)))
+    return (fx1, fy1, fx2, fy2)
 
 # Model loading helpers
 
@@ -866,3 +886,183 @@ def plot_gradcam_simple(
     plt.show()
 
     remove_cam_hooks(cams)
+
+from scipy.stats import pearsonr, spearmanr  # add near top of file
+def run_gradcam_quantitative_analysis(
+df,
+img_folder,
+folds,
+model_names,
+device,
+backbone,
+img_size,
+baseline_dir,
+aux_model_config,
+fusion_model_config,
+tab_cols=None,
+grid_size=(12, 12),
+aug_type="strong",
+pseudo_aux_config=None,
+yolo_conf_threshold=0.3,
+):
+    """
+    Compute quantitative GradCAM stats for each model across folds.
+
+    Returns:
+        img_level_df  : row per (fold, Id, model)
+        summary_df    : mean overlaps per model
+        corr_df       : correlation between overlap and abs error per model
+    """
+    img_rows = []
+
+    for fold in folds:
+        val_df = get_fold_val(df, fold=fold)
+        # need YOLO bbox + conf to compute overlaps
+        if "yolo_conf" not in val_df.columns:
+            raise ValueError("val_df must contain 'yolo_conf' and bbox columns.")
+
+        val_detected = val_df[val_df["yolo_conf"] > yolo_conf_threshold].reset_index(drop=True)
+        if len(val_detected) == 0:
+            continue
+
+        tab_input_dim = len(tab_cols) if tab_cols is not None else None
+
+        # load models for this fold
+        models = {}
+        aux_keys = {}
+        aux_is_bce = {}
+        needs_tabular = {}
+
+        for name in model_names:
+            model, aux_key, is_bce, need_tab = load_named_model(
+                fold=fold,
+                device=device,
+                model_name=name,
+                backbone=backbone,
+                img_size=img_size,
+                baseline_dir=baseline_dir,
+                aux_model_config=aux_model_config,
+                fusion_model_config=fusion_model_config,
+                tab_input_dim=tab_input_dim,
+                pseudo_aux_config=pseudo_aux_config,
+            )
+            models[name] = model
+            aux_keys[name] = aux_key
+            aux_is_bce[name] = is_bce
+            needs_tabular[name] = need_tab
+
+        cams = build_cam_objects(
+            models=models,
+            device=device,
+            aux_model_config=aux_model_config,
+            grid_size=grid_size,
+            pseudo_aux_config=pseudo_aux_config,
+        )
+
+        for _, row in val_detected.iterrows():
+            img_id = row["Id"]
+            path = os.path.join(img_folder, img_id + ".jpg")
+
+            img_tensor, img_pil = preprocess(path, img_size=img_size, aug_type=aug_type)
+            W, H = img_pil.size
+
+            bbox = (
+                row["bbox_x1"],
+                row["bbox_y1"],
+                row["bbox_x2"],
+                row["bbox_y2"],
+            )
+            face_bbox = make_face_proxy_bbox(bbox, W, H)
+
+            true_paw = float(row["Pawpularity"])
+
+            tab_tensor = None
+            if tab_cols is not None:
+                tab_tensor = make_tab_tensor(row, tab_cols)
+
+            for name in model_names:
+                model = models[name]
+                cam_obj = cams[name]
+
+                main_paw, _ = predict_scores(
+                    model=model,
+                    img_tensor=img_tensor,
+                    device=device,
+                    aux_key=aux_keys[name],
+                    aux_is_bce=aux_is_bce[name],
+                    tab_tensor=tab_tensor,
+                    needs_tabular=needs_tabular[name],
+                )
+
+                if needs_tabular[name]:
+                    cam_map = cam_obj(
+                        img_tensor.to(device),
+                        tab_tensor.to(device),
+                        target_head="main",
+                    )
+                else:
+                    cam_map = cam_obj(
+                        img_tensor.to(device),
+                        target_head="main",
+                    )
+
+                _, cam_rsz = cam_to_heatmap(cam_map, img_pil)
+
+                pet_overlap = compute_cam_mask_overlap(cam_rsz, bbox, W, H)
+                face_overlap = compute_cam_mask_overlap(cam_rsz, face_bbox, W, H)
+
+                img_rows.append({
+                    "fold": fold,
+                    "Id": img_id,
+                    "model_name": name,
+                    "true_paw": true_paw,
+                    "pred_paw": main_paw,
+                    "abs_error": abs(true_paw - main_paw),
+                    "cam_pet_overlap": pet_overlap,
+                    "cam_face_overlap": face_overlap,
+                    "yolo_conf": float(row["yolo_conf"]),
+                })
+
+        remove_cam_hooks(cams)
+
+    import pandas as pd
+    img_df = pd.DataFrame(img_rows)
+    if img_df.empty:
+        return img_df, img_df, img_df
+
+    # summary per model
+    summary_df = (
+        img_df
+        .groupby("model_name", as_index=False)[["cam_pet_overlap", "cam_face_overlap"]]
+        .mean()
+        .rename(columns={
+            "cam_pet_overlap": "mean_cam_pet_overlap",
+            "cam_face_overlap": "mean_cam_face_overlap",
+        })
+    )
+
+    # correlations per model
+    corr_rows = []
+    for name, g in img_df.groupby("model_name"):
+        if g["cam_pet_overlap"].nunique() > 1 and g["abs_error"].nunique() > 1:
+            pr, _ = pearsonr(g["cam_pet_overlap"], g["abs_error"])
+            sr, _ = spearmanr(g["cam_pet_overlap"], g["abs_error"])
+        else:
+            pr, sr = float("nan"), float("nan")
+
+        if g["cam_face_overlap"].nunique() > 1 and g["abs_error"].nunique() > 1:
+            pr_face, _ = pearsonr(g["cam_face_overlap"], g["abs_error"])
+            sr_face, _ = spearmanr(g["cam_face_overlap"], g["abs_error"])
+        else:
+            pr_face, sr_face = float("nan"), float("nan")
+
+        corr_rows.append({
+            "model_name": name,
+            "pearson_cam_pet_vs_abs_err": pr,
+            "spearman_cam_pet_vs_abs_err": sr,
+            "pearson_cam_face_vs_abs_err": pr_face,
+            "spearman_cam_face_vs_abs_err": sr_face,
+        })
+
+    corr_df = pd.DataFrame(corr_rows)
+    return img_df, summary_df, corr_df

@@ -23,10 +23,15 @@ from src.gate_fusion import EfficientNetGatedFusion
 def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler, 
                           scale_target,aux_loss_weights=None, 
                           binary_aux_tasks=None,
-                          freeze_backbone=False,BN_running_state_frozen=False):
+                          freeze_backbone=False,BN_running_state_frozen=False,
+                          binary_aux_loss_type="bce",
+                            binary_aux_pos_weight=None,
+                            binary_aux_flip_targets=None,):
     
     cfg_binary_aux_tasks = binary_aux_tasks or []
     aux_loss_weights = aux_loss_weights or {}
+    binary_aux_pos_weight = binary_aux_pos_weight or {}
+    binary_aux_flip_targets = set(binary_aux_flip_targets or [])
     model.train()
 
 
@@ -93,9 +98,30 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
                 for task in cfg_binary_aux_tasks:
                     if task in aux and task in preds:
                         label = aux[task].to(device).float().unsqueeze(1)
-                        bce   = torch.nn.functional.binary_cross_entropy_with_logits(
-                            preds[task], label
-                        )
+                        logits = preds[task]
+
+                        # flip target , e.g. Face where original class 0 is minority
+                        if task in binary_aux_flip_targets:
+                            label_for_loss = 1.0 - label
+                        else:
+                            label_for_loss = label
+
+                        if binary_aux_loss_type == "weighted_bce":
+                            pos_w_val = binary_aux_pos_weight.get(task, 1.0)
+                            pos_weight = torch.tensor(
+                                [pos_w_val],
+                                device=logits.device,
+                                dtype=logits.dtype,
+                            )
+                            bce = torch.nn.functional.binary_cross_entropy_with_logits(
+                                logits,
+                                label_for_loss,
+                                pos_weight=pos_weight
+                            )
+                        else:    
+                            bce   = torch.nn.functional.binary_cross_entropy_with_logits(
+                                preds[task], label_for_loss
+                            )
                         loss = loss + aux_loss_weights.get(task, 1.0) * bce
                         total_binary_losses[task] += bce.item() * imgs.size(0)    
 
@@ -146,11 +172,12 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
     return logs    
  
 
-def validate_image(model, loader, device, scale_target):
+def validate_image(model, loader, device, scale_target,binary_aux_flip_targets=None):
     model.eval()
     val_preds, val_targets = [], []
     aux_pred_store   = {}  # {task: [arrays]}
     aux_target_store = {}  # {task: [arrays]}
+    binary_aux_flip_targets = set(binary_aux_flip_targets or [])
 
     with torch.no_grad():
         for batch in loader: 
@@ -182,6 +209,9 @@ def validate_image(model, loader, device, scale_target):
                         t = aux[task]
                         if not isinstance(t, np.ndarray):
                             t = t.numpy()
+                        if task in binary_aux_flip_targets:
+                            t = 1.0 - t
+                        
                         aux_target_store[task].append(t)
 
             if scale_target:
@@ -342,6 +372,11 @@ def run_single_fold(
     aux_tasks = cfg.get("aux_tasks", [])
     binary_aux_tasks = cfg.get("binary_aux_tasks", [])
     aux_loss_weights = cfg.get("aux_loss_weights", {})
+    binary_aux_loss_type = cfg.get("binary_aux_loss_type", "bce")
+    binary_aux_pos_weight = cfg.get("binary_aux_pos_weight", {})
+    binary_aux_flip_targets = cfg.get("binary_aux_flip_targets", [])
+
+
     backbone_name = cfg["backbone"]
     img_size = cfg["img_size"]
     aug_type = cfg["aug"]
@@ -538,12 +573,16 @@ def run_single_fold(
                 aux_loss_weights=aux_loss_weights,
                 freeze_backbone=freeze_backbone,
                 BN_running_state_frozen=BN_running_state_frozen,
-                binary_aux_tasks=binary_aux_tasks
+                binary_aux_tasks=binary_aux_tasks,
+                binary_aux_loss_type=binary_aux_loss_type,
+                binary_aux_pos_weight=binary_aux_pos_weight,
+                binary_aux_flip_targets=binary_aux_flip_targets,
             )
             avg_train_loss = train_out["loss"] if isinstance(train_out, dict) else train_out #total
             avg_paw_loss   = train_out.get("loss_paw", avg_train_loss) #pawpularity only
             rmse, val_preds, val_targets, aux_metrics = validate_image(
                 model, val_loader, device, scale_target,
+                binary_aux_flip_targets=binary_aux_flip_targets,
             )
         else:
             avg_train_loss = train_one_epoch_fusion(
@@ -650,7 +689,8 @@ def run_single_fold(
     model.load_state_dict(best_state)
     if mode == "image":
         _, val_preds, val_targets, _ = validate_image(
-            model, val_loader, device, scale_target
+            model, val_loader, device, scale_target,
+            binary_aux_flip_targets=binary_aux_flip_targets
         )
     else:
         _, val_preds, val_targets = validate_fusion(

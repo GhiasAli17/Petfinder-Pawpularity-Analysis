@@ -33,6 +33,43 @@ def save_config(cfg, out_dir):
         json.dump(cfg, f, indent=2)
 
 
+def build_binary_aux_cfg(df, binary_aux_tasks, target_col="Pawpularity"):
+    """
+    Automatically compute:
+      - pos_weight: majority_count / minority_count for each binary task
+      - flip_targets: tasks where class 0 is the minority
+                      (i.e. we flip label so the rare class becomes 1 for BCE)
+
+    Returns:
+        pos_weight_dict   : {task: float}
+        flip_targets_list : [task, ...]
+    """
+    pos_weight_dict   = {}
+    flip_targets_list = []
+
+    for task in binary_aux_tasks:
+        counts = df[task].value_counts()   # counts for 0 and 1
+        n0 = counts.get(0, 0)
+        n1 = counts.get(1, 0)
+
+        print(f"  {task}: class_0={n0}, class_1={n1}", end="")
+
+        if n1 == 0 or n0 == 0:
+            print(f"   WARNING: only one class present, skipping pos_weight")
+            pos_weight_dict[task] = 1.0
+            continue
+
+        if n1 < n0:
+            # class 1 is minority . standard BCE, pos_weight = n0 / n1
+            pos_weight_dict[task] = n0 / n1
+            print(f"   minority=class_1, pos_weight={pos_weight_dict[task]:.2f}")
+        else:
+            # class 0 is minority . flip targets so class 0 becomes 1
+            pos_weight_dict[task] = n1 / n0
+            flip_targets_list.append(task)
+            print(f"   minority=class_0, flip target, pos_weight={pos_weight_dict[task]:.2f}")
+
+    return pos_weight_dict, flip_targets_list
 
 def late_fusion_from_oof(
     oof_df,

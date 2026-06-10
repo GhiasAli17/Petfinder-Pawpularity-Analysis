@@ -606,6 +606,74 @@ def plot_metadata_aux_curves(out_dir, binary_aux_tasks, n_folds=5):
         plt.savefig(os.path.join(out_dir, f"learning_curves_{aux_task}.png"),
                     dpi=150, bbox_inches="tight")
         plt.show()
+
+def compute_aux_head_summary_table(
+    out_dirs_dict,
+    n_folds=5,
+):
+    """
+    Compute per-label, per-loss-type summary of auxiliary head metrics
+    at the best RMSE epoch across all folds.
+
+    out_dirs_dict: {
+        "Blur (BCE)":  "/path/to/exp17_blur_dir",
+        "Blur (wBCE)": "/path/to/exp18_blur_wbce_dir",
+        "Eyes (BCE)":  "/path/to/exp17_eyes_dir",
+        ...
+    }
+
+    Returns: summary DataFrame
+    """
+    rows = []
+
+    for label_name, out_dir in out_dirs_dict.items():
+        fold_metrics = []
+
+        for fold in range(1, n_folds + 1):
+            lp = os.path.join(out_dir, f"epoch_logs_fold{fold}.csv")
+            if not os.path.exists(lp):
+                continue
+
+            fold_log = pd.read_csv(lp)
+
+            # pick the best RMSE epoch
+            best_row = fold_log.loc[fold_log["val_rmse"].idxmin()]
+            fold_metrics.append(best_row)
+
+        if not fold_metrics:
+            print(f"No logs found for {label_name} in {out_dir}")
+            continue
+
+        metrics_df = pd.DataFrame(fold_metrics)
+
+        # find any metric columns that exist
+        def mean_if_exists(col):
+            if col in metrics_df.columns:
+                return round(metrics_df[col].mean(), 3)
+            return None
+
+        # detect which aux task column prefix is present
+        # e.g. "Blur_val_f1" or "Eyes_val_f1"
+        f1_col   = next((c for c in metrics_df.columns if c.endswith("_val_f1")),   None)
+        acc_col  = next((c for c in metrics_df.columns if c.endswith("_val_acc")),  None)
+        rec_col  = next((c for c in metrics_df.columns if c.endswith("_val_rec")),  None)
+        prec_col = next((c for c in metrics_df.columns if c.endswith("_val_prec")), None)
+        auc_col  = next((c for c in metrics_df.columns if c.endswith("_val_auc")),  None)
+        ap_col   = next((c for c in metrics_df.columns if c.endswith("_val_ap")),   None)
+
+        rows.append({
+            "Label / Loss":  label_name,
+            "Val RMSE":      round(metrics_df["val_rmse"].mean(), 3),
+            "Accuracy":      mean_if_exists(acc_col)  if acc_col  else None,
+            "F1":            mean_if_exists(f1_col)   if f1_col   else None,
+            "Recall":        mean_if_exists(rec_col)  if rec_col  else None,
+            "Precision":     mean_if_exists(prec_col) if prec_col else None,
+            "ROC AUC":       mean_if_exists(auc_col)  if auc_col  else None,
+            "Avg Precision": mean_if_exists(ap_col)   if ap_col   else None,
+        })
+
+    summary_df = pd.DataFrame(rows)
+    return summary_df        
 # def plot_metadata_aux_curves(out_dir, binary_aux_tasks, n_folds=5):
 #     """
 #     Plot per-epoch learning curves for metadata binary aux task experiments.

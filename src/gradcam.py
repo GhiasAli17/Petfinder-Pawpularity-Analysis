@@ -887,7 +887,7 @@ def plot_gradcam_simple(
 
     remove_cam_hooks(cams)
 
-from scipy.stats import pearsonr, spearmanr  # add near top of file
+from scipy.stats import pearsonr, spearmanr  #  near top of file
 def run_gradcam_quantitative_analysis(
 df,
 img_folder,
@@ -1066,3 +1066,75 @@ yolo_conf_threshold=0.3,
 
     corr_df = pd.DataFrame(corr_rows)
     return img_df, summary_df, corr_df
+
+
+def compute_overlap_error_quartile_analysis(
+    img_df,
+    model_names,
+    display_names,
+    overlap_col="cam_pet_overlap",
+    error_col="abs_error",
+):
+    """
+    For each model, split images into high overlap (top 25%)
+    and low overlap (bottom 25%) groups and compare mean error.
+    Also computes Pearson/Spearman within each group.
+
+    Returns:
+        quartile_df : high vs low overlap error per model
+    """
+    import pandas as pd
+    from scipy.stats import pearsonr, spearmanr
+
+    results = []
+
+    for name in model_names:
+        g = img_df[img_df["model_name"] == name].copy()
+
+        if len(g) < 4:
+            continue
+
+        q75 = g[overlap_col].quantile(0.75)
+        q25 = g[overlap_col].quantile(0.25)
+
+        high_g = g[g[overlap_col] >= q75]
+        low_g  = g[g[overlap_col] <= q25]
+
+        high_overlap = high_g[error_col]
+        low_overlap  = low_g[error_col]
+
+        # Pearson/Spearman within low group
+        if low_g[overlap_col].nunique() > 1:
+            pr_low, _  = pearsonr(low_g[overlap_col],  low_g[error_col])
+            sr_low, _  = spearmanr(low_g[overlap_col], low_g[error_col])
+        else:
+            pr_low, sr_low = float("nan"), float("nan")
+
+        # Pearson/Spearman within high group
+        if high_g[overlap_col].nunique() > 1:
+            pr_high, _ = pearsonr(high_g[overlap_col],  high_g[error_col])
+            sr_high, _ = spearmanr(high_g[overlap_col], high_g[error_col])
+        else:
+            pr_high, sr_high = float("nan"), float("nan")
+
+        results.append({
+            "model_name":                name,
+            "display_name":              display_names.get(name, name),
+            "low_overlap_threshold":     round(q25, 3),
+            "high_overlap_threshold":    round(q75, 3),
+            "low_overlap_mean_overlap":  round(low_g[overlap_col].mean(),  4),
+            "high_overlap_mean_overlap": round(high_g[overlap_col].mean(), 4),
+            "low_overlap_n":             len(low_overlap),
+            "high_overlap_n":            len(high_overlap),
+            "low_overlap_mean_error":    round(low_overlap.mean(),  2),
+            "high_overlap_mean_error":   round(high_overlap.mean(), 2),
+            "difference":                round(high_overlap.mean() - low_overlap.mean(), 2),
+            "pearson_low_group":         round(pr_low,  3),
+            "spearman_low_group":        round(sr_low,  3),
+            "pearson_high_group":        round(pr_high, 3),
+            "spearman_high_group":       round(sr_high, 3),
+        })
+
+    quartile_df = pd.DataFrame(results)
+    return quartile_df
+

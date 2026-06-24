@@ -1,4 +1,5 @@
 # src/utils.py
+import gc
 import os, random, json
 import numpy as np
 import torch
@@ -12,6 +13,11 @@ from sklearn.metrics import root_mean_squared_error
 
 from xgboost import XGBRegressor
 from cuml.svm import SVR as cuSVR  
+from sklearn.model_selection import KFold
+from torch.utils.data import DataLoader
+
+from src.models import VisionAuxNet
+from src.data import build_transforms, ImageOnlyDataset
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -70,6 +76,118 @@ def build_binary_aux_cfg(df, binary_aux_tasks, target_col="Pawpularity"):
             print(f"   minority=class_0, flip target, pos_weight={pos_weight_dict[task]:.2f}")
 
     return pos_weight_dict, flip_targets_list
+
+def extract_aux_oof_to_csv(out_dir, df, img_folder, cfg, force=False, device="cuda", target_col="Pawpularity"):
+    """
+    Create oof_detail_aux.csv with per-sample aux probabilities and labels.
+    """
+    aux_path = os.path.join(out_dir, "oof_detail_aux.csv")
+
+    if os.path.exists(aux_path) and not force:
+        print(f"Loading existing: {aux_path}")
+        return pd.read_csv(aux_path)
+    
+
+    binary_aux_tasks = cfg["binary_aux_tasks"]
+    flip_targets = set(cfg.get("binary_aux_flip_targets", []))
+
+    kf = KFold(
+        n_splits=cfg["n_splits"],
+        shuffle=True,
+        random_state=cfg["seed"]
+    )
+
+    rows = []
+    val_tf = build_transforms(cfg["img_size"], cfg["aug"], train=False)
+
+    for fold, (_, val_idx) in enumerate(kf.split(df), start=1):
+        val_df = df.iloc[val_idx].reset_index(drop=True)
+        ckpt_path = os.path.join(out_dir, f"model_fold{fold}.pt")
+
+        if not os.path.exists(ckpt_path):
+            print(f"fold {fold}: checkpoint missing, skipped")
+            continue
+
+        model = VisionAuxNet(
+            backbone_name=cfg["backbone"],
+            img_size=cfg["img_size"],
+            aux_tasks=[],
+            binary_aux_tasks=binary_aux_tasks,
+            head_type=cfg.get("head_type", "linear"),
+            pretrained=False,
+            use_saliency=False,
+        ).to(device)
+
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        model.eval()
+
+        val_ds = ImageOnlyDataset(
+            val_df,
+            img_folder,
+            val_tf,
+            aux_tasks=[],
+            binary_aux_tasks=binary_aux_tasks
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg["batch_size"],
+            shuffle=False,
+            num_workers=8,
+            pin_memory=True,
+        )
+
+        local_ptr = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                imgs, y, aux = batch
+                imgs = imgs.to(device)
+                preds = model(imgs)
+
+                bs = imgs.size(0)
+                batch_ids = val_df.iloc[local_ptr:local_ptr + bs]["Id"].tolist()
+                batch_y   = val_df.iloc[local_ptr:local_ptr + bs][target_col].values
+                local_ptr += bs
+
+                task_probs = {}
+                task_preds = {}
+                task_trues = {}
+
+                for task in binary_aux_tasks:
+                    raw_prob = torch.sigmoid(preds[task]).cpu().numpy().reshape(-1)
+                    true_lab = aux[task].numpy().reshape(-1)
+
+                    # Convert probabilities back to the original label semantics.
+                    # Some tasks were trained with flipped targets to make the minority
+                    # class the positive class for weighted BCE training.
+                    # and this if condition will not be called for standard BCE as flip_targets will not contain that aux task.
+                    prob_orig = (1.0 - raw_prob) if task in flip_targets else raw_prob
+                    pred_bin = (prob_orig >= 0.5).astype(int)
+
+                    task_probs[task] = prob_orig
+                    task_preds[task] = pred_bin
+                    task_trues[task] = true_lab
+
+                for i in range(bs):
+                    row = {
+                        "Id": batch_ids[i],
+                        "fold": fold,
+                        "ytrue": float(batch_y[i]),
+                    }
+                    for task in binary_aux_tasks:
+                        row[f"{task}_true"] = int(task_trues[task][i])
+                        row[f"{task}_prob"] = float(task_probs[task][i])
+                        row[f"{task}_pred_05"] = int(task_preds[task][i])
+                    rows.append(row)
+
+        del model
+        torch.cuda.empty_cache()
+        gc.collect()
+        print(f"fold {fold}: extracted {len(val_df)} samples")
+
+    aux_df = pd.DataFrame(rows)
+    aux_df.to_csv(aux_path, index=False)
+    print("\nSaved:", aux_path)
+    return aux_df
 
 def late_fusion_from_oof(
     oof_df,

@@ -403,7 +403,7 @@ def compare_oof_by_bins_multi(
         plt.bar(x + i*width - (width*len(pred_cols))/2,
                 summary[f"{label}_rmse"], width, label=label)
 
-    plt.xticks(x, summary["bin"].astype(str), rotation=45)
+    plt.xticks(x, summary["bin"].astype(str), rotation=0)
     plt.xlabel("Target bin")
     plt.ylabel("RMSE")
     title = "RMSE per bin"

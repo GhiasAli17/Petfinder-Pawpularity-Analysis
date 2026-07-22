@@ -82,7 +82,33 @@ def plot_oof_true_pred_lines(oof_df,true_col="ytrue",pred_col="oof_pred", title_
     plt.show()
 
 
-
+def plot_pred_distribution(df, pred_cols, y_col="ytrue", score_range=(0, 100),
+                           title_prefix="", save_path=None):
+    """
+    Overlaid histograms of the true and predicted score distributions.
+   
+    """
+    names = list(pred_cols)
+    bins = np.linspace(score_range[0], score_range[1], 31)
+    fig, axes = plt.subplots(1, len(names), figsize=(5 * len(names), 4),
+                             squeeze=False)
+    axes = axes[0]
+    for ax, name in zip(axes, names):
+        ax.hist(df[y_col].values, bins=bins, alpha=0.5, density=True,
+                color="tab:gray", label="True")
+        ax.hist(df[pred_cols[name]].values, bins=bins, alpha=0.6, density=True,
+                color="tab:blue", label="Predicted")
+        ax.set_xlabel("Pawpularity")
+        ax.set_ylabel("Density")
+        ax.set_title(name)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8)
+    if title_prefix:
+        fig.suptitle(title_prefix, fontsize=12)
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.show()
 
 
 

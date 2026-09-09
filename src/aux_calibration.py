@@ -24,7 +24,7 @@ from sklearn.metrics import brier_score_loss
 
 
 
-def expected_calibration_error(y_true, y_prob, n_bins=10):
+def calibration_error(y_true, y_prob, n_bins=10):
     """
     Calculate Expected Calibration Error (ECE).
 
@@ -130,7 +130,7 @@ def probability_metrics(y_true, y_prob, n_bins=10):
     y_prob = np.asarray(y_prob, dtype=float)
 
     brier = float(brier_score_loss(y_true, y_prob))
-    ece, bin_df = expected_calibration_error(
+    ece, bin_df = calibration_error(
         y_true=y_true,
         y_prob=y_prob,
         n_bins=n_bins,

@@ -154,11 +154,6 @@ def diagnose_raw_oof_calibration(aux_df, aux_tasks, n_bins=10):
     "Calibration should be evaluated separately for each label using
     calibration curve, Brier score, and ECE."
 
-    Important:
-    - Uses the entire pooled OOF table.
-    - Uses raw probabilities only.
-    - Does NOT fit Platt or isotonic calibration.
-    - This is descriptive diagnosis before method comparison.
 
     Parameters
     ----------
@@ -230,11 +225,6 @@ def plot_calibration_curves(
      feedback Section 2:
     "Compare predicted probability ranges with observed positive rate."
 
-    Interpretation:
-    - Dashed diagonal: ideal calibration.
-    - Curve below diagonal: overconfident probabilities.
-    - Curve above diagonal: underconfident probabilities.
-    - Empty bins are omitted.
     """
     n_tasks = len(aux_tasks)
     n_rows = int(np.ceil(n_tasks / n_cols))
@@ -298,7 +288,6 @@ def fit_platt_calibrator(y_prob_fit, y_true_fit):
     Logistic regression learns a smooth mapping:
         raw probability -> calibrated probability
 
-    Note:
     We use raw probabilities as the input because the current OOF CSV
     contains post-sigmoid probabilities, not original logits.
     """
@@ -324,9 +313,6 @@ def fit_isotonic_calibrator(y_prob_fit, y_true_fit):
 
     Isotonic regression learns a flexible monotonic mapping:
         raw probability -> calibrated probability
-
-    It can capture non-linear probability mismatch, but must always
-    be evaluated on held-out folds to guard against overfitting.
     """
     model = IsotonicRegression(
         y_min=0.0,
@@ -400,14 +386,10 @@ def crossfit_calibration_one_task(
           Fit Platt and isotonic on OOF rows from all folds except k.
           Transform raw OOF probabilities in fold k only.
       - Repeat for every fold.
-
-    Therefore, every row receives:
+    every row receives:
       - raw probability;
       - Platt calibrated probability fitted without that row/fold;
       - isotonic calibrated probability fitted without that row/fold.
-
-    This is the preferred approach over a one-time random split because
-    every OOF record is used as held-out calibration evaluation once.
 
     Returns
     -------
@@ -652,13 +634,8 @@ def select_calibration_method(
     improvement on the separate evaluation set. Otherwise retain raw."
 
     A calibrated method is accepted only if, relative to raw:
-    - Brier score decreases by at least min_brier_improvement;
-    - ECE decreases by at least min_ece_improvement.
-
-    Default values are zero so the function initially implements the
-    professor's directional rule: both must decrease. Later, after
-    seeing all 12 results, you may set small practical margins to avoid
-    selecting negligible numerical differences.
+    - Brier score decreases ;
+    - ECE decreases .
 
     Returns
     -------

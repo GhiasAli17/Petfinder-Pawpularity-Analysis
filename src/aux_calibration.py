@@ -1,3 +1,4 @@
+#src/aux_calibration.py
 """
  Probability Calibration Diagnosis and Post-Hoc Calibration
 
@@ -277,26 +278,17 @@ def plot_calibration_curves(
     plt.show()
 
 
-def fit_platt_calibrator(y_prob_fit, y_true_fit):
+def fit_platt_calibrator(y_score_fit, y_true_fit):
     """
-    Fit Platt scaling on a calibration-fit subset.
-
-     feedback Section 2:
-    Candidate post-hoc calibration method: Platt scaling.
-
-    Implementation:
-    Logistic regression learns a smooth mapping:
-        raw probability -> calibrated probability
-
-    We use raw probabilities as the input because the current OOF CSV
-    contains post-sigmoid probabilities, not original logits.
+  
+      Fit logistic calibration using logit score.
     """
     model = LogisticRegression(
         solver="lbfgs",
         max_iter=1000,
     )
 
-    x_fit = np.asarray(y_prob_fit, dtype=float).reshape(-1, 1)
+    x_fit = np.asarray(y_score_fit, dtype=float).reshape(-1, 1)
     y_fit = np.asarray(y_true_fit, dtype=int)
 
     model.fit(x_fit, y_fit)
@@ -330,20 +322,30 @@ def fit_isotonic_calibrator(y_prob_fit, y_true_fit):
 
 def apply_calibrator(y_prob, method, calibrator=None):
     """
-    Transform raw probabilities using one requested method.
+    Apply the requested probability-calibration method.
 
     Parameters
     ----------
     y_prob : array-like
-        Raw probabilities.
-    method : {"raw", "platt", "isotonic"}
+        Method-dependent input:
+        - 'raw': original probabilities, returned unchanged.
+        - 'isotonic': original probabilities.
+        - 'platt': logits computed from clipped original probabilities.
+
+        For Platt, the caller must perform the logit transformation.
+        This function does not convert probabilities to logits.
+
+    method : {'raw', 'platt', 'isotonic'}
+        Method to apply.
+
     calibrator : fitted model or None
-        Required for Platt and isotonic methods.
+        Required for 'platt' and 'isotonic'.
+        Must have been fitted using the same input representation.
 
     Returns
     -------
     np.ndarray
-        Probability vector in [0, 1].
+        Output probabilities in [0, 1].
     """
     y_prob = np.asarray(y_prob, dtype=float)
 
@@ -377,29 +379,6 @@ def crossfit_calibration_one_task(
     """
     Generate cross-fitted calibrated probabilities for one auxiliary task.
 
-     feedback Section 2:
-    "The data used to fit the calibration method should be separated
-    from the data used to evaluate calibration results."
-
-    This uses the existing five OOF folds:
-      - For fold k:
-          Fit Platt and isotonic on OOF rows from all folds except k.
-          Transform raw OOF probabilities in fold k only.
-      - Repeat for every fold.
-    every row receives:
-      - raw probability;
-      - Platt calibrated probability fitted without that row/fold;
-      - isotonic calibrated probability fitted without that row/fold.
-
-    Returns
-    -------
-    result_df : pd.DataFrame
-        One row per original OOF record with:
-          Id, fold, true, raw_prob, platt_prob_cf, isotonic_prob_cf
-    method_metrics_df : pd.DataFrame
-        Raw/Platt/Isotonic Brier and ECE over all cross-fitted records.
-    bin_tables : dict[str, pd.DataFrame]
-        Per-method calibration-curve bin tables.
     """
     true_col = f"{task}_true"
     prob_col = f"{task}_prob"
@@ -407,6 +386,9 @@ def crossfit_calibration_one_task(
     y_true = aux_df[true_col].to_numpy(dtype=int)
     raw_prob = aux_df[prob_col].to_numpy(dtype=float)
     fold_values = aux_df[fold_col].to_numpy()
+    # Convert raw probabilities to logits for Platt calibration only.
+    p_clipped = np.clip(raw_prob, 1e-7, 1 - 1e-7)
+    logit_score = np.log(p_clipped / (1.0 - p_clipped))
 
     unique_folds = np.sort(np.unique(fold_values))
 
@@ -420,11 +402,13 @@ def crossfit_calibration_one_task(
         y_fit = y_true[fit_mask]
         p_fit = raw_prob[fit_mask]
         p_eval = raw_prob[eval_mask]
+        score_fit = logit_score[fit_mask]
+        score_eval = logit_score[eval_mask]
 
         # Fit calibration methods on OOF records from the other folds.
         platt_model = fit_platt_calibrator(
-            y_prob_fit=p_fit,
-            y_true_fit=y_fit,
+            y_score_fit=score_fit,
+             y_true_fit=y_fit,
         )
         isotonic_model = fit_isotonic_calibrator(
             y_prob_fit=p_fit,
@@ -433,7 +417,7 @@ def crossfit_calibration_one_task(
 
         # Predict calibrated probabilities only for held-out fold k.
         platt_prob_cf[eval_mask] = apply_calibrator(
-            y_prob=p_eval,
+            y_prob=score_eval,
             method="platt",
             calibrator=platt_model,
         )
@@ -500,8 +484,6 @@ def crossfit_calibration_all_tasks(
 ):
     """
     Run five-fold calibration cross-fitting for every auxiliary head.
-
-     feedback Section 2:
     - Evaluate each label separately.
     - Compare raw and calibrated probabilities on held-out data.
     - Avoid fitting/evaluating calibration on the same samples.

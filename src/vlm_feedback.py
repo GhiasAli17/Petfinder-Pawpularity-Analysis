@@ -6,19 +6,20 @@ from PIL import Image
 from google import genai
 
 
+
 AUX_TASK_TO_VLM_LABEL = {
-    "Eyes": "Eyes visibility",
-    "Face": "Face visibility",
+    "Eyes": "Eyes",
+    "Face": "Face",
     "Occlusion": "Occlusion",
     "Blur": "Blur",
-    "Subject Focus": "Subject focus",
-    "Action": "Action/motion cues",
-    "Accessory": "Accessory cues",
-    "Near": "Near-camera view",
-    "Group": "Multiple-pet/group cues",
-    "Collage": "Collage/layout cues",
-    "Human": "Visible-human cues",
-    "Info": "Informational visual cues",
+    "Subject Focus": "Focus",
+    "Action": "Action",
+    "Accessory": "Accessory",
+    "Near": "Near",
+    "Group": "Group",
+    "Collage": "Collage",
+    "Human": "Human",
+    "Info": "Info",
 }
 
 def generate_vlm_feedback_gemini(client, image_path, prompt, model):
@@ -30,6 +31,67 @@ def generate_vlm_feedback_gemini(client, image_path, prompt, model):
     )
 
     return response.text.strip()
+
+def get_vlm_feedback_prompt(displayed_tasks, include_photo_suggestion=True):
+    attribute_lines = [
+        f"- {AUX_TASK_TO_VLM_LABEL[task]}"
+        for task in displayed_tasks
+    ]
+
+    if len(attribute_lines) == 0:
+        attribute_text = (
+            "- No task-specific attributes were displayed by the "
+            "selective auxiliary-feedback policy."
+        )
+    else:
+        attribute_text = "\n".join(attribute_lines)
+
+    suggestion_instruction = (
+        "\nAfter the attribute judgments, provide one short photo-review suggestion."
+        if include_photo_suggestion
+        else ""
+    )
+
+    return f"""
+You are evaluating a pet photo using the PetFinder Pawpularity metadata definitions.
+
+Analyze only visible image characteristics. Do not mention breed, cuteness,
+adoption likelihood, or predicted popularity.
+
+Use the definitions exactly as written below. Do not use a broader everyday
+meaning of the attribute names.
+
+Photo metadata definitions:
+- Focus: Pet stands out against uncluttered background, not too close / far.
+- Eyes: Both eyes are facing front or near-front, with at least 1 eye / pupil decently clear.
+- Face: Decently clear face, facing front or near-front.
+- Near: Single pet taking up significant portion of photo, roughly over 50% of photo width or height.
+- Action: Pet in the middle of an action, such as jumping.
+- Accessory: Accompanying physical or digital accessory / prop, such as toy or digital sticker, excluding collar and leash.
+- Group: More than 1 pet in the photo.
+- Collage: Digitally-retouched photo, such as digital photo frame or combination of multiple photos.
+- Human: Human in the photo.
+- Occlusion: Specific undesirable objects blocking part of the pet, such as human, cage, or fence. Not all blocking objects are occlusion.
+- Info: Custom-added text or labels, such as pet name or description.
+- Blur: Noticeably out of focus or noisy, especially for the pet's eyes and face.
+
+For this image, evaluate only these attributes:
+
+{attribute_text}
+
+For each listed attribute, return one line in this exact format:
+Attribute: Yes/No/Unclear — short reason.
+
+Use "Unclear" if the image does not provide enough evidence.
+Do not infer hidden details.
+Do not count collar or leash as Accessory.
+Do not count ordinary background objects as Info.
+Do not count every overlap as Occlusion.{suggestion_instruction}
+
+Return only the requested lines.
+Do not claim that changing the image will improve the Pawpularity score.
+Keep the full response concise.
+""".strip()
 
 
 def generate_vlm_feedback_table(
@@ -83,44 +145,44 @@ def get_displayed_aux_tasks_for_image(img_id, batch_results_df, aux_tasks):
     return displayed_tasks
 
 
-def get_vlm_feedback_prompt(displayed_tasks, include_photo_suggestion=True):
-    attribute_lines = [
-        f"- {AUX_TASK_TO_VLM_LABEL[task]}"
-        for task in displayed_tasks
-    ]
+# def get_vlm_feedback_prompt(displayed_tasks, include_photo_suggestion=True):
+#     attribute_lines = [
+#         f"- {AUX_TASK_TO_VLM_LABEL[task]}"
+#         for task in displayed_tasks
+#     ]
 
-    if len(attribute_lines) == 0:
-        attribute_text = (
-            "- No task-specific attributes were displayed by the "
-            "selective auxiliary-feedback policy."
-        )
-    else:
-        attribute_text = "\n".join(attribute_lines)
+#     if len(attribute_lines) == 0:
+#         attribute_text = (
+#             "- No task-specific attributes were displayed by the "
+#             "selective auxiliary-feedback policy."
+#         )
+#     else:
+#         attribute_text = "\n".join(attribute_lines)
 
-    suggestion_instruction = (
-        "\nAlso provide one short photo-review suggestion."
-        if include_photo_suggestion
-        else ""
-    )
+#     suggestion_instruction = (
+#         "\nAlso provide one short photo-review suggestion."
+#         if include_photo_suggestion
+#         else ""
+#     )
 
-    return f"""
-You are evaluating a pet photo for a user-facing image review interface.
+#     return f"""
+# You are evaluating a pet photo for a user-facing image review interface.
 
-Analyze only visible image characteristics. Do not mention breed, cuteness,
-adoption likelihood, or predicted popularity.
+# Analyze only visible image characteristics. Do not mention breed, cuteness,
+# adoption likelihood, or predicted popularity.
 
-The task-specific auxiliary-feedback system displayed feedback for the
-following attributes for this image:
+# The task-specific auxiliary-feedback system displayed feedback for the
+# following attributes for this image:
 
-{attribute_text}
+# {attribute_text}
 
-For each listed attribute, give one concise judgment using cautious language,
-such as "appears", "may", or "seems".{suggestion_instruction}
+# For each listed attribute, give one concise judgment using cautious language,
+# such as "appears", "may", or "seems".{suggestion_instruction}
 
-Return only the requested lines.
-Do not claim that changing the image will improve the Pawpularity score.
-Keep the full response concise.
-""".strip()
+# Return only the requested lines.
+# Do not claim that changing the image will improve the Pawpularity score.
+# Keep the full response concise.
+# """.strip()
 
 
 def build_vlm_template(

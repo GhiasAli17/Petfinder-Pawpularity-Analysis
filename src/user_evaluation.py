@@ -101,6 +101,7 @@ def build_condition_materials(user_eval_images_df, vlm_feedback_df, img_folder):
     return pd.DataFrame(condition_rows)
 
 
+
 def build_counterbalanced_versions(
     user_eval_images_df,
     condition_materials_df,
@@ -108,31 +109,87 @@ def build_counterbalanced_versions(
 ):
     condition_lookup = condition_materials_df.set_index(["Id", "condition"])
 
+    required_cols = [
+        "image_set",
+        "image_order_in_set",
+    ]
+
+    missing_cols = [
+        col
+        for col in required_cols
+        if col not in user_eval_images_df.columns
+    ]
+
+    if len(missing_cols) > 0:
+        raise ValueError(
+            "user_eval_images_df is missing required columns for set-level "
+            f"counterbalancing: {missing_cols}. "
+            "Run the image-set assignment cell before calling this function."
+        )
+
     image_order_df = (
         user_eval_images_df
         .copy()
-        .sort_values(["case_group", "case_type", "Id"])
+        .sort_values(["image_set", "image_order_in_set", "Id"])
         .reset_index(drop=True)
     )
 
-    image_order_df["image_order"] = np.arange(len(image_order_df))
+    image_sets = (
+        image_order_df["image_set"]
+        .drop_duplicates()
+        .tolist()
+    )
+
+    if len(image_sets) != len(condition_order):
+        raise ValueError(
+            "The number of image sets must match the number of conditions. "
+            f"Found {len(image_sets)} image sets and "
+            f"{len(condition_order)} conditions."
+        )
+
+    set_sizes = (
+        image_order_df
+        .groupby("image_set")["Id"]
+        .nunique()
+    )
+
+    if set_sizes.nunique() != 1:
+        raise ValueError(
+            "All image sets must contain the same number of images. "
+            f"Observed set sizes: {set_sizes.to_dict()}"
+        )
+
+    set_to_index = {
+        image_set: idx
+        for idx, image_set in enumerate(image_sets)
+    }
 
     participant_version_rows = []
 
     for version_index in range(len(condition_order)):
         version_name = f"Version {version_index + 1}"
+        trial_order = 1
 
         for row in image_order_df.itertuples(index=False):
+            set_index = set_to_index[row.image_set]
+
             assigned_condition = condition_order[
-                (int(row.image_order) + version_index) % len(condition_order)
+                (set_index + version_index) % len(condition_order)
             ]
 
-            material = condition_lookup.loc[(row.Id, assigned_condition)]
+            material = condition_lookup.loc[
+                (
+                    row.Id,
+                    assigned_condition,
+                )
+            ]
 
             participant_version_rows.append({
                 "version": version_name,
                 "version_index": version_index + 1,
-                "trial_order": int(row.image_order) + 1,
+                "trial_order": trial_order,
+                "image_set": row.image_set,
+                "image_order_in_set": row.image_order_in_set,
                 "Id": row.Id,
                 "fold": row.fold,
                 "case_group": row.case_group,
@@ -150,6 +207,8 @@ def build_counterbalanced_versions(
                 "vlm_model": material["vlm_model"],
                 "vlm_feedback": material["vlm_feedback"],
             })
+
+            trial_order += 1
 
     return pd.DataFrame(participant_version_rows)
 

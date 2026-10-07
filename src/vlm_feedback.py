@@ -22,6 +22,21 @@ AUX_TASK_TO_VLM_LABEL = {
     "Info": "Info",
 }
 
+FIXED_VLM_TASKS = [
+    "Face",
+    "Eyes",
+    "Blur",
+    "Occlusion",
+]
+
+
+VLM_ATTRIBUTE_DEFINITIONS = {
+    "Face": "Face: Decently clear face, facing front or near-front.",
+    "Eyes": "Eyes: Both eyes are facing front or near-front, with at least 1 eye / pupil decently clear.",
+    "Blur": "Blur: Noticeably out of focus or noisy, especially for the pet's eyes and face.",
+    "Occlusion": "Occlusion: Specific undesirable objects blocking part of the pet, such as human, cage, or fence. Not all blocking objects are occlusion.",
+}
+
 def generate_vlm_feedback_gemini(client, image_path, prompt, model):
     image = Image.open(image_path)
 
@@ -97,8 +112,11 @@ Keep the full response concise.
 def generate_vlm_feedback_table(
     vlm_template_df,
     api_key,
-    model="models/gemini-flash-lite-latest",
+    model="models/gemini-3.5-flash-lite",
+    delay_seconds=5,
 ):
+    import time
+
     client = genai.Client(api_key=api_key)
     vlm_rows = []
 
@@ -125,6 +143,8 @@ def generate_vlm_feedback_table(
             "vlm_feedback": feedback,
         })
 
+        time.sleep(delay_seconds)
+
     return pd.DataFrame(vlm_rows)
 
 
@@ -145,66 +165,67 @@ def get_displayed_aux_tasks_for_image(img_id, batch_results_df, aux_tasks):
     return displayed_tasks
 
 
-# def get_vlm_feedback_prompt(displayed_tasks, include_photo_suggestion=True):
-#     attribute_lines = [
-#         f"- {AUX_TASK_TO_VLM_LABEL[task]}"
-#         for task in displayed_tasks
-#     ]
-
-#     if len(attribute_lines) == 0:
-#         attribute_text = (
-#             "- No task-specific attributes were displayed by the "
-#             "selective auxiliary-feedback policy."
-#         )
-#     else:
-#         attribute_text = "\n".join(attribute_lines)
-
-#     suggestion_instruction = (
-#         "\nAlso provide one short photo-review suggestion."
-#         if include_photo_suggestion
-#         else ""
-#     )
-
-#     return f"""
-# You are evaluating a pet photo for a user-facing image review interface.
-
-# Analyze only visible image characteristics. Do not mention breed, cuteness,
-# adoption likelihood, or predicted popularity.
-
-# The task-specific auxiliary-feedback system displayed feedback for the
-# following attributes for this image:
-
-# {attribute_text}
-
-# For each listed attribute, give one concise judgment using cautious language,
-# such as "appears", "may", or "seems".{suggestion_instruction}
-
-# Return only the requested lines.
-# Do not claim that changing the image will improve the Pawpularity score.
-# Keep the full response concise.
-# """.strip()
-
-
 def build_vlm_template(
     user_eval_images_df,
     img_folder,
-    batch_results_df,
-    aux_tasks,
+    batch_results_df=None,
+    aux_tasks=None,
     include_photo_suggestion=True,
+    use_fixed_attributes=False,
+    fixed_tasks=None,
 ):
     rows = []
 
-    for row in user_eval_images_df.itertuples(index=False):
-        displayed_tasks = get_displayed_aux_tasks_for_image(
-            img_id=row.Id,
-            batch_results_df=batch_results_df,
-            aux_tasks=aux_tasks,
-        )
+    if fixed_tasks is None:
+        fixed_tasks = FIXED_VLM_TASKS
 
-        vlm_prompt = get_vlm_feedback_prompt(
-            displayed_tasks=displayed_tasks,
-            include_photo_suggestion=include_photo_suggestion,
-        )
+    for row in user_eval_images_df.itertuples(index=False):
+
+        if use_fixed_attributes:
+            displayed_tasks = fixed_tasks
+
+            attribute_text = "\n".join(
+                f"- {VLM_ATTRIBUTE_DEFINITIONS[task]}"
+                for task in displayed_tasks
+            )
+
+            vlm_prompt = f"""
+You are evaluating a pet photo using the PetFinder Pawpularity metadata definitions.
+
+Analyze only visible image characteristics. Do not mention breed, cuteness,
+adoption likelihood, or predicted popularity.
+
+Use the definitions exactly as written below. Do not use a broader everyday
+meaning of the attribute names.
+
+For this image, evaluate the following fixed attributes:
+
+{attribute_text}
+
+For each listed attribute, return one line in this exact format:
+Attribute: Yes/No/Unclear — short reason.
+
+Use "Unclear" if the image does not provide enough evidence.
+Do not infer hidden details.
+Do not count every overlap as Occlusion.
+
+Return only the requested lines.
+Do not provide a photo-review suggestion.
+Do not claim that changing the image will improve the Pawpularity score.
+Keep the full response concise.
+""".strip()
+
+        else:
+            displayed_tasks = get_displayed_aux_tasks_for_image(
+                img_id=row.Id,
+                batch_results_df=batch_results_df,
+                aux_tasks=aux_tasks,
+            )
+
+            vlm_prompt = get_vlm_feedback_prompt(
+                displayed_tasks=displayed_tasks,
+                include_photo_suggestion=include_photo_suggestion,
+            )
 
         rows.append({
             "Id": row.Id,

@@ -27,6 +27,8 @@ FIXED_VLM_TASKS = [
     "Eyes",
     "Blur",
     "Occlusion",
+    "Near",
+    "Group"
 ]
 
 
@@ -35,6 +37,8 @@ VLM_ATTRIBUTE_DEFINITIONS = {
     "Eyes": "Eyes: Both eyes are facing front or near-front, with at least 1 eye / pupil decently clear.",
     "Blur": "Blur: Noticeably out of focus or noisy, especially for the pet's eyes and face.",
     "Occlusion": "Occlusion: Specific undesirable objects blocking part of the pet, such as human, cage, or fence. Not all blocking objects are occlusion.",
+    "Near": "Near: Single pet taking up significant portion of photo (roughly over 50% of photo width or height).",
+    "Group": "Group: More than 1 pet in the photo."
 }
 
 def generate_vlm_feedback_gemini(client, image_path, prompt, model):

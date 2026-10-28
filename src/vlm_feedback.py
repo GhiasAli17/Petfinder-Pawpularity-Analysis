@@ -201,6 +201,8 @@ adoption likelihood, or predicted popularity.
 
 Use the definitions exactly as written below. Do not use a broader everyday
 meaning of the attribute names.
+Use exactly these labels, in this order:
+Face, Eyes, Blur, Occlusion, Near, Group.
 
 For this image, evaluate the following fixed attributes:
 
@@ -212,6 +214,7 @@ Attribute: Yes/No/Unclear — short reason.
 Use "Unclear" if the image does not provide enough evidence.
 Do not infer hidden details.
 Do not count every overlap as Occlusion.
+
 
 Return only the requested lines.
 Do not provide a photo-review suggestion.

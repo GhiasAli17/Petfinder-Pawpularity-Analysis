@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from src.losses import saliency_loss
 
 
-from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset
+from src.data import build_transforms, ImageOnlyDataset, ImageTabDataset, JointImageMaskTransform
 from src.models import  VisionRegNet, FeatureConcatFusionNet, VisionAuxNet
 from src.film import FiLMExternalModulation, FiLMInternalModulation, FiLMExternalSingle, FiLMInternalResModulation
 from src.cross_attention import  SWINCrossAttention
@@ -40,6 +40,11 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
     total_paw_loss = 0.0         # track main pawpularity loss separately
     total_vis_loss = 0.0          # track visibility aux loss separately if there is
     total_sal_loss    = 0.0
+    saliency_counts = {
+    "saliency_valid": 0,
+    "saliency_empty": 0,
+        "saliency_full": 0,
+    }
     total_binary_losses = {t: 0.0 for t in cfg_binary_aux_tasks}
     total_binary_correct = {t: 0.0 for t in cfg_binary_aux_tasks}  # 
     total_binary_counts  = {t: 0   for t in cfg_binary_aux_tasks}  # 
@@ -127,22 +132,57 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
 
                         #  track train accuracy for metadata 
                         with torch.no_grad():
-                            pred_bin = (torch.sigmoid(preds[task]) > 0.5).float()
-                            total_binary_correct[task] += (pred_bin == label).sum().item()
-                            total_binary_counts[task]  += label.size(0)
+                            # Original semantics: label 1 means attribute present.
+                            logits_for_metrics = preds[task]
+
+                            if task in binary_aux_flip_targets:
+                                logits_for_metrics = -logits_for_metrics
+
+                            pred_bin = (logits_for_metrics >= 0.0).float()
+
+                            total_binary_correct[task] += (
+                                pred_bin == label
+                            ).sum().item()
+
+                            total_binary_counts[task] += label.size(0)
+                            # pred_bin = (torch.sigmoid(preds[task]) > 0.5).float()
+                            # total_binary_correct[task] += (pred_bin == label).sum().item()
+                            # total_binary_counts[task]  += label.size(0)
                         
 
+        # sal_weight = aux_loss_weights.get("saliency", 0.0)
+        # if sal_weight > 0.0 and "spatial" in preds and "pet_bbox" in aux:
+        #     sal = saliency_loss(
+        #         preds["spatial"].float(),
+        #         aux["pet_bbox"].to(device),
+        #         img_size=384,
+        #     )
+        #     loss = loss + sal_weight * sal
+        #     total_sal_loss += sal.item() * imgs.size(0)            
+
         sal_weight = aux_loss_weights.get("saliency", 0.0)
-        if sal_weight > 0.0 and "spatial" in preds and "pet_bbox" in aux:
-            sal = saliency_loss(
+
+        if sal_weight > 0.0:
+            if (
+                not isinstance(preds, dict)
+                or "spatial" not in preds
+                or "pet_mask" not in aux
+            ):
+                raise ValueError(
+                    "Saliency requires spatial features and an aligned pet_mask."
+                )
+
+            sal, sal_stats = saliency_loss(
                 preds["spatial"].float(),
-                aux["pet_bbox"].to(device),
-                img_size=384,
+                aux["pet_mask"].to(device),
+                return_stats=True,
             )
+
             loss = loss + sal_weight * sal
-            total_sal_loss += sal.item() * imgs.size(0)            
+            total_sal_loss += sal.item() * imgs.size(0)
 
-
+            for key, value in sal_stats.items():
+                saliency_counts[key] += value
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -156,8 +196,11 @@ def train_one_epoch_image(model, loader, optimizer, criterion, device,scaler,
         logs["loss_brisque"] = total_brisque_loss / n_samples
     if total_vis_loss > 0:
         logs["loss_visibility_ratio"] = total_vis_loss / n_samples
-    if total_sal_loss > 0:                                    
-        logs["loss_saliency"] = total_sal_loss / n_samples   
+    if aux_loss_weights.get("saliency", 0.0) > 0:
+        logs["loss_saliency"] = total_sal_loss / n_samples
+        logs.update(saliency_counts)    
+    # if total_sal_loss > 0:                                    
+    #     logs["loss_saliency"] = total_sal_loss / n_samples   
 
     for task, total in total_binary_losses.items():
         if total > 0:
@@ -205,14 +248,31 @@ def validate_image(model, loader, device, scale_target,binary_aux_flip_targets=N
                         if task not in aux_pred_store:
                             aux_pred_store[task]   = []
                             aux_target_store[task] = []
-                        aux_pred_store[task].append(preds[task].cpu().numpy())
+                        # aux_pred_store[task].append(preds[task].cpu().numpy())
+                        # t = aux[task]
+                        # if not isinstance(t, np.ndarray):
+                        #     t = t.numpy()
+                        # if task in binary_aux_flip_targets:
+                        #     t = 1.0 - t
+                        # Convert predictions back to original attribute semantics.
+                        logits_for_eval = preds[task]
+
+                        if task in binary_aux_flip_targets:
+                            logits_for_eval = -logits_for_eval
+
+                        aux_pred_store[task].append(
+                            logits_for_eval.cpu().numpy()
+                        )
+
+                        # Ground truth stays in its original encoding.
                         t = aux[task]
+
                         if not isinstance(t, np.ndarray):
                             t = t.numpy()
-                        if task in binary_aux_flip_targets:
-                            t = 1.0 - t
+
+                        aux_target_store[task].append(t)    
                         
-                        aux_target_store[task].append(t)
+                        # aux_target_store[task].append(t)
 
             if scale_target:
                 out = torch.sigmoid(main_pred).cpu().numpy().squeeze() * 100.0
@@ -244,7 +304,8 @@ def validate_image(model, loader, device, scale_target,binary_aux_flip_targets=N
             aux_metrics[f"{task}_val_bce"] = float(val_bce)
 
             #  val accuracy 
-            p_binary = (1 / (1 + np.exp(-p))) > 0.5
+            # p_binary = (1 / (1 + np.exp(-p))) > 0.5
+            p_binary = p >= 0.0
             aux_metrics[f"{task}_val_acc"] = float(np.mean(p_binary == t))
             
 
@@ -391,8 +452,28 @@ def run_single_fold(
     val_tf   = build_transforms(img_size, aug_type, train=False)
 
     if mode == "image":
-        train_ds = ImageOnlyDataset(train_df, img_folder, train_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
-        val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
+        use_joint = bool(cfg.get("use_saliency", False))
+        train_joint = (
+            JointImageMaskTransform(img_size, aug_type, train=True) if use_joint else None
+        )
+        val_joint = (
+            JointImageMaskTransform(img_size, aug_type, train=False) if use_joint else None
+        )
+
+        train_ds = ImageOnlyDataset(
+            train_df, img_folder, train_tf,
+            aux_tasks=aux_tasks,
+            binary_aux_tasks=binary_aux_tasks,
+            joint_transform=train_joint,
+        )
+        val_ds = ImageOnlyDataset(
+            val_df, img_folder, val_tf,
+            aux_tasks=aux_tasks,
+            binary_aux_tasks=binary_aux_tasks,
+            joint_transform=val_joint,
+        )
+        # train_ds = ImageOnlyDataset(train_df, img_folder, train_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
+        # val_ds   = ImageOnlyDataset(val_df,   img_folder, val_tf, aux_tasks=aux_tasks,binary_aux_tasks=binary_aux_tasks)
     elif mode == "fusion" or "film" in mode or mode == "gated_effb1" or "cross" in mode:
         assert tab_cols is not None
         train_ds = ImageTabDataset(train_df, img_folder, tab_cols, train_tf)

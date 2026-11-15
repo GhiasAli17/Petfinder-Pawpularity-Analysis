@@ -311,8 +311,20 @@ def compute_cam_mask_overlap(
     # 1: threshold CAM into binary mask
     # top 50% of activation values -> 1 (model is looking here)
     # bottom 50%                   -> 0 (model is not looking here)
-    threshold = float(cam_resized.max()) * cam_threshold
-    cam_bin   = (cam_resized.astype(np.float32) >= threshold)
+    # threshold = float(cam_resized.max()) * cam_threshold
+    # cam_bin   = (cam_resized.astype(np.float32) >= threshold)
+    cam_values = np.asarray(cam_resized, dtype=np.float32)
+
+    if not np.isfinite(cam_values).all():
+        raise ValueError("CAM contains nonfinite values.")
+
+    maximum = float(cam_values.max())
+
+    if maximum <= 0.0:
+        return 0.0
+
+    threshold = maximum * cam_threshold
+    cam_bin = cam_values >= threshold
 
     #  2: convert bbox to binary mask
     # clip to image bounds, then fill 1.0 inside the pet bbox

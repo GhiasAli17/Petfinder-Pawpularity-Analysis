@@ -89,7 +89,7 @@ def extract_aux_oof_to_csv(out_dir, df, img_folder, cfg, force=False, device="cu
     
 
     binary_aux_tasks = cfg["binary_aux_tasks"]
-    flip_targets = set(cfg.get("binary_aux_flip_targets", []))
+    # flip_targets = set(cfg.get("binary_aux_flip_targets", []))
 
     kf = KFold(
         n_splits=cfg["n_splits"],
@@ -101,6 +101,32 @@ def extract_aux_oof_to_csv(out_dir, df, img_folder, cfg, force=False, device="cu
     val_tf = build_transforms(cfg["img_size"], cfg["aug"], train=False)
 
     for fold, (_, val_idx) in enumerate(kf.split(df), start=1):
+        if (
+            cfg.get("binary_aux_config_scope")
+            == "per_fold_training"
+        ):
+            fold_config_path = os.path.join(
+                out_dir, f"config_fold{fold}.json"
+            )
+
+            if not os.path.exists(fold_config_path):
+                raise FileNotFoundError(
+                    f"Missing Fold {fold} configuration: "
+                    f"{fold_config_path}"
+                )
+
+            with open(fold_config_path) as f:
+                fold_cfg = json.load(f)
+
+            flip_targets = set(
+                fold_cfg["binary_aux_flip_targets"]
+            )
+
+        else:
+            # Preserve compatibility with previous experiments.
+            flip_targets = set(
+                cfg.get("binary_aux_flip_targets", [])
+            )
         val_df = df.iloc[val_idx].reset_index(drop=True)
         ckpt_path = os.path.join(out_dir, f"model_fold{fold}.pt")
 

@@ -329,8 +329,20 @@ def compute_cam_mask_overlap(
     """
     IoU between high-activation CAM region and bbox.
     """
-    threshold = float(cam_resized.max()) * cam_threshold
-    cam_bin = (cam_resized.astype(np.float32) >= threshold)
+    # threshold = float(cam_resized.max()) * cam_threshold
+    # cam_bin = (cam_resized.astype(np.float32) >= threshold) 
+    cam_values = np.asarray(cam_resized, dtype=np.float32)
+
+    if not np.isfinite(cam_values).all():
+        raise ValueError("CAM contains nonfinite values.")
+
+    maximum = float(cam_values.max())
+
+    if maximum <= 0.0:
+        return 0.0
+
+    threshold = maximum * cam_threshold
+    cam_bin = cam_values >= threshold
 
     x1 = int(max(0, float(bbox[0])))
     y1 = int(max(0, float(bbox[1])))
@@ -388,22 +400,50 @@ def load_baseline(fold, device, backbone, img_size, baseline_dir):
 
 def load_metadata_aux_model(fold, device, aux_name, aux_model_config, backbone, img_size):
     cfg = aux_model_config[aux_name]
+    # New multi-head configuration, with support for old single-head models.
+    tasks = cfg.get("binary_aux_tasks")
+    if tasks is None:
+        tasks = [cfg["binary_name"]]
+
+    tasks = list(tasks)
+
+    if len(tasks) != len(set(tasks)):
+        raise ValueError(f"Duplicate auxiliary tasks: {tasks}")
 
     model = VisionAuxNet(
         backbone_name=backbone,
         img_size=img_size,
         aux_tasks=[],
-        binary_aux_tasks=[cfg["binary_name"]],
-        head_type="mlp",
+        binary_aux_tasks=tasks,
+        head_type=cfg.get("head_type", "mlp"),
+        head_hidden=cfg.get("head_hidden", 256),
         pretrained=False,
         use_saliency=False,
     ).to(device)
 
     ckpt = os.path.join(cfg["dir"], f"model_fold{fold}.pt")
     state = torch.load(ckpt, map_location=device)
+
     model.load_state_dict(state, strict=True)
     model.eval()
-    return model, cfg["binary_name"], cfg["is_bce"]
+
+    return model, cfg.get("binary_name"), cfg.get("is_bce", True)
+
+    # model = VisionAuxNet(
+    #     backbone_name=backbone,
+    #     img_size=img_size,
+    #     aux_tasks=[],
+    #     binary_aux_tasks=[cfg["binary_name"]],
+    #     head_type="mlp",
+    #     pretrained=False,
+    #     use_saliency=False,
+    # ).to(device)
+
+    # ckpt = os.path.join(cfg["dir"], f"model_fold{fold}.pt")
+    # state = torch.load(ckpt, map_location=device)
+    # model.load_state_dict(state, strict=True)
+    # model.eval()
+    # return model, cfg["binary_name"], cfg["is_bce"]
 
 def load_pseudo_aux_or_saliency_model(
     fold,
@@ -1005,11 +1045,16 @@ yolo_conf_threshold=0.3,
                         img_tensor.to(device),
                         target_head="main",
                     )
-
                 _, cam_rsz = cam_to_heatmap(cam_map, img_pil)
 
-                pet_overlap = compute_cam_mask_overlap(cam_rsz, bbox, W, H)
-                face_overlap = compute_cam_mask_overlap(cam_rsz, face_bbox, W, H)
+                pet_overlap = compute_cam_mask_overlap(
+                    cam_rsz, bbox, W, H
+                )
+                face_overlap = compute_cam_mask_overlap(
+                    cam_rsz, face_bbox, W, H
+                )
+
+                cam_zero = bool(np.max(cam_rsz) <= 0.0)
 
                 img_rows.append({
                     "fold": fold,
@@ -1020,8 +1065,25 @@ yolo_conf_threshold=0.3,
                     "abs_error": abs(true_paw - main_paw),
                     "cam_pet_overlap": pet_overlap,
                     "cam_face_overlap": face_overlap,
+                    "cam_zero": cam_zero,
                     "yolo_conf": float(row["yolo_conf"]),
                 })
+                # _, cam_rsz = cam_to_heatmap(cam_map, img_pil)
+
+                # pet_overlap = compute_cam_mask_overlap(cam_rsz, bbox, W, H)
+                # face_overlap = compute_cam_mask_overlap(cam_rsz, face_bbox, W, H)
+
+                # img_rows.append({
+                #     "fold": fold,
+                #     "Id": img_id,
+                #     "model_name": name,
+                #     "true_paw": true_paw,
+                #     "pred_paw": main_paw,
+                #     "abs_error": abs(true_paw - main_paw),
+                #     "cam_pet_overlap": pet_overlap,
+                #     "cam_face_overlap": face_overlap,
+                #     "yolo_conf": float(row["yolo_conf"]),
+                # })
 
         remove_cam_hooks(cams)
 
@@ -1096,6 +1158,12 @@ def compute_overlap_error_quartile_analysis(
 
         q75 = g[overlap_col].quantile(0.75)
         q25 = g[overlap_col].quantile(0.25)
+        if q25 >= q75:
+            print(
+                f"{name}: low/high quartile thresholds are identical; "
+                "skipping this comparison."
+            )
+            continue
 
         high_g = g[g[overlap_col] >= q75]
         low_g  = g[g[overlap_col] <= q25]
@@ -1116,24 +1184,47 @@ def compute_overlap_error_quartile_analysis(
             sr_high, _ = spearmanr(high_g[overlap_col], high_g[error_col])
         else:
             pr_high, sr_high = float("nan"), float("nan")
-
         results.append({
-            "model_name":                name,
-            "display_name":              display_names.get(name, name),
-            "low_overlap_threshold":     round(q25, 3),
-            "high_overlap_threshold":    round(q75, 3),
-            "low_overlap_mean_overlap":  round(low_g[overlap_col].mean(),  4),
-            "high_overlap_mean_overlap": round(high_g[overlap_col].mean(), 4),
-            "low_overlap_n":             len(low_overlap),
-            "high_overlap_n":            len(high_overlap),
-            "low_overlap_mean_error":    round(low_overlap.mean(),  2),
-            "high_overlap_mean_error":   round(high_overlap.mean(), 2),
-            "difference":                round(high_overlap.mean() - low_overlap.mean(), 2),
-            "pearson_low_group":         round(pr_low,  3),
-            "spearman_low_group":        round(sr_low,  3),
-            "pearson_high_group":        round(pr_high, 3),
-            "spearman_high_group":       round(sr_high, 3),
+            "model_name": name,
+            "display_name": display_names.get(name, name),
+            "low_overlap_threshold": float(q25),
+            "high_overlap_threshold": float(q75),
+            "low_overlap_mean_overlap": float(
+                low_g[overlap_col].mean()
+            ),
+            "high_overlap_mean_overlap": float(
+                high_g[overlap_col].mean()
+            ),
+            "low_overlap_n": len(low_overlap),
+            "high_overlap_n": len(high_overlap),
+            "low_overlap_mean_error": float(low_overlap.mean()),
+            "high_overlap_mean_error": float(high_overlap.mean()),
+            "difference": float(
+                high_overlap.mean() - low_overlap.mean()
+            ),
+            "pearson_low_group": float(pr_low),
+            "spearman_low_group": float(sr_low),
+            "pearson_high_group": float(pr_high),
+            "spearman_high_group": float(sr_high),
         })
+
+        # results.append({
+        #     "model_name":                name,
+        #     "display_name":              display_names.get(name, name),
+        #     "low_overlap_threshold":     round(q25, 3),
+        #     "high_overlap_threshold":    round(q75, 3),
+        #     "low_overlap_mean_overlap":  round(low_g[overlap_col].mean(),  4),
+        #     "high_overlap_mean_overlap": round(high_g[overlap_col].mean(), 4),
+        #     "low_overlap_n":             len(low_overlap),
+        #     "high_overlap_n":            len(high_overlap),
+        #     "low_overlap_mean_error":    round(low_overlap.mean(),  2),
+        #     "high_overlap_mean_error":   round(high_overlap.mean(), 2),
+        #     "difference":                round(high_overlap.mean() - low_overlap.mean(), 2),
+        #     "pearson_low_group":         round(pr_low,  3),
+        #     "spearman_low_group":        round(sr_low,  3),
+        #     "pearson_high_group":        round(pr_high, 3),
+        #     "spearman_high_group":       round(sr_high, 3),
+        # })
 
     quartile_df = pd.DataFrame(results)
     return quartile_df
